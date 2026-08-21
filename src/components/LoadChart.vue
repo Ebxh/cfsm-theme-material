@@ -88,12 +88,17 @@ const baseTooltipConfig = computed(() => ({
 const chartMargin = { top: 12, right: 24, bottom: 32, left: 56 }
 const chartMarginWithLegend = { top: 12, right: 24, bottom: 52, left: 56 }
 
-// 视图选项
+// 视图选项（CFSM 9 个固定时间窗口，hours 值对应 /api/history/all 合法入参）
 const presetViews = [
-  { label: '4 小时', hours: 4 },
-  { label: '1 天', hours: 24 },
-  { label: '7 天', hours: 168 },
-  { label: '30 天', hours: 720 },
+  { label: '10M', hours: 0.167 },
+  { label: '30M', hours: 0.5 },
+  { label: '1H', hours: 1 },
+  { label: '6H', hours: 6 },
+  { label: '12H', hours: 12 },
+  { label: '24H', hours: 24 },
+  { label: '2D', hours: 48 },
+  { label: '4D', hours: 96 },
+  { label: '7D', hours: 168 },
 ]
 
 interface LoadChartRecord {
@@ -118,41 +123,17 @@ interface LoadChartRecord {
   connections_udp: number
 }
 
-// 可用视图列表
-const availableViews = computed(() => {
-  const views: { label: string, hours?: number }[] = [{ label: '实时' }]
-  const maxHours = maxRecordPreserveTime.value
-
-  for (const v of presetViews) {
-    if (maxHours >= v.hours) {
-      views.push({ label: v.label, hours: v.hours })
-    }
-  }
-
-  const maxPreset = presetViews[presetViews.length - 1]
-  if (maxPreset && maxHours > maxPreset.hours) {
-    const label = maxHours % 24 === 0
-      ? `${Math.floor(maxHours / 24)} 天`
-      : `${maxHours} 小时`
-    views.push({ label, hours: maxHours })
-  }
-  else if (maxHours > 4 && !presetViews.some(v => v.hours === maxHours)) {
-    const label = maxHours % 24 === 0
-      ? `${Math.floor(maxHours / 24)} 天`
-      : `${maxHours} 小时`
-    views.push({ label, hours: maxHours })
-  }
-
-  return views
-})
+// 可用视图列表（CFSM 主题：始终渲染 9 个固定窗口；hours 值与 /api/history/all 合法入参对齐）
+const availableViews = computed(() => presetViews)
 
 // 当前选中的视图
-const selectedView = ref<string>('实时')
+const selectedView = ref<string>('24H')
 const selectedHours = computed(() => {
   const view = availableViews.value.find(v => v.label === selectedView.value)
-  return view?.hours
+  return view?.hours ?? 24
 })
-const isRealtime = computed(() => selectedView.value === '实时')
+// 移除实时模式（CFSM 主题：固定 9 个历史窗口，不做"实时"轮询）
+const isRealtime = computed(() => false)
 
 // 数据状态
 const remoteData = shallowRef<LoadChartRecord[]>([])

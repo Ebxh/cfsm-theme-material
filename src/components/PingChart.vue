@@ -52,54 +52,34 @@ const chartColors = new Proxy([] as string[], {
 // 从 publicSettings 获取记录保留时间
 const maxPingRecordPreserveTime = computed(() => appStore.publicSettings?.ping_record_preserve_time ?? 168)
 
-// 视图选项
+// 视图选项（CFSM 9 个固定时间窗口）
 const presetViews = [
-  { label: '1 小时', hours: 1 },
-  { label: '6 小时', hours: 6 },
-  { label: '12 小时', hours: 12 },
-  { label: '1 天', hours: 24 },
+  { label: '10M', hours: 0.167 },
+  { label: '30M', hours: 0.5 },
+  { label: '1H', hours: 1 },
+  { label: '6H', hours: 6 },
+  { label: '12H', hours: 12 },
+  { label: '24H', hours: 24 },
+  { label: '2D', hours: 48 },
+  { label: '4D', hours: 96 },
+  { label: '7D', hours: 168 },
 ]
 
-// 可用视图列表
-const availableViews = computed(() => {
-  const views: { label: string, hours: number }[] = []
-  const maxHours = maxPingRecordPreserveTime.value
-
-  for (const v of presetViews) {
-    if (maxHours >= v.hours) {
-      views.push(v)
-    }
-  }
-
-  const maxPreset = presetViews[presetViews.length - 1]
-  if (maxPreset && maxHours > maxPreset.hours) {
-    const label = maxHours % 24 === 0
-      ? `${Math.floor(maxHours / 24)} 天`
-      : `${maxHours} 小时`
-    views.push({ label, hours: maxHours })
-  }
-  else if (maxHours > 1 && !presetViews.some(v => v.hours === maxHours)) {
-    const label = maxHours % 24 === 0
-      ? `${Math.floor(maxHours / 24)} 天`
-      : `${maxHours} 小时`
-    views.push({ label, hours: maxHours })
-  }
-
-  return views
-})
+// 可用视图列表（CFSM 主题：始终渲染 9 个固定窗口）
+const availableViews = computed(() => presetViews)
 
 // 当前选中的视图
-const selectedView = ref<string>('1 天')
+const selectedView = ref<string>('24H')
 const selectedHours = computed(() => {
   const view = availableViews.value.find(v => v.label === selectedView.value)
-  return view?.hours || 1
+  return view?.hours ?? 1
 })
 
 // 初始化默认视图
 watch(availableViews, (views) => {
   const firstView = views[0]
   if (!views.some(view => view.label === selectedView.value)) {
-    selectedView.value = firstView?.label ?? ''
+    selectedView.value = firstView?.label ?? '24H'
   }
 }, { immediate: true })
 

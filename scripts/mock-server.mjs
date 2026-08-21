@@ -154,12 +154,21 @@ function buildLossWindow(online) {
   return points
 }
 
-function makeHistory(server) {
+// 預生成每個節點 7 天 / 5 分鐘間隔的歷史（覆蓋 9 個時間窗口 10M ~ 7D）
+const HISTORY_DAYS = 7
+const HISTORY_INTERVAL_MS = 5 * 60 * 1000
+const historyCache = new Map()
+
+function getServerHistory(server) {
+  let cached = historyCache.get(server.id)
+  if (cached)
+    return cached
+
   const rows = []
   const now = Date.now()
-  const points = 120
-  for (let i = points - 1; i >= 0; i--) {
-    const ts = now - i * (86400000 / points)
+  const total = Math.floor((HISTORY_DAYS * 86400 * 1000) / HISTORY_INTERVAL_MS)
+  for (let i = total - 1; i >= 0; i--) {
+    const ts = now - i * HISTORY_INTERVAL_MS
     rows.push({
       timestamp: ts,
       cpu: rand(2, 80),
@@ -176,7 +185,14 @@ function makeHistory(server) {
       tcp_conn: randInt(3, 100),
     })
   }
+  historyCache.set(server.id, rows)
   return rows
+}
+
+function makeHistory(server, hours = 24) {
+  const all = getServerHistory(server)
+  const threshold = Date.now() - hours * 3600 * 1000
+  return all.filter(row => row.timestamp >= threshold)
 }
 
 const CONFIG = {
@@ -232,10 +248,11 @@ const server = http.createServer(async (req, res) => {
   }
   if (path === '/api/history/all') {
     const id = url.searchParams.get('id')
+    const hours = Number(url.searchParams.get('hours') ?? 24)
     const serverData = SERVERS.find(s => s.id === id)
     if (!serverData)
       return json(res, { error: 'Server not found' }, 404)
-    return json(res, makeHistory(serverData))
+    return json(res, makeHistory(serverData, hours))
   }
 
   // 靜態文件

@@ -37,7 +37,7 @@ function handleButtonClick(action: string) {
       })
       break
     case 'jumpToSetting':
-      location.href = '/admin'
+      location.href = '/admin#/admin'
       break
     case 'openLoginDialog':
       window.$modal.create({
