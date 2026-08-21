@@ -1,0 +1,39 @@
+name: Deploy Build Branch
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - package.json
+      - package-lock.json
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Deploy dist to build branch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git branch -f build
+          git checkout build
+          git rm -rf --ignore-unmatch .
+          git add -f dist
+          git mv dist/index.html index.html
+          git mv dist/assets assets
+          git commit -m "chore: deploy build artifacts to build branch"
+          git push origin build --force
