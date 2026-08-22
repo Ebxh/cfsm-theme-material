@@ -309,6 +309,77 @@ interface CfServerWire {
   last_updated?: number | string
   timestamp?: number | string
   is_online?: boolean
+  /** 內嵌延遲歷史（約 30 點），由 /api/servers 直接返回 */
+  ping?: CfPingPoint[]
+  /** 內嵌丟包歷史，與 ping 時間軸對齊 */
+  loss?: CfPingPoint[]
+  custom_ct?: string
+  custom_cu?: string
+  custom_cm?: string
+  custom_bd?: string
+}
+
+/** /api/servers 內嵌的 ping / loss 採樣點 */
+interface CfPingPoint {
+  ts?: number
+  ct?: number | null
+  cu?: number | null
+  cm?: number | null
+  bd?: number | null
+}
+
+/** /api/servers 完整響應 */
+interface CfServersResponse {
+  servers?: CfServerWire[]
+  latestReportUpdates?: Array<{
+    serverId?: string
+    reportTs?: number
+    samples?: Array<{ ts?: number, data?: Record<string, unknown> }>
+  }>
+  stats?: Record<string, number>
+  regionStats?: Record<string, number>
+  sysConfig?: Record<string, unknown>
+}
+
+/**
+ * /api/history/all 僅接受白名單時長；未登入時 hours > 24 會被後端強制 401。
+ * 參見 CF-Server-Monitor API.md 2.4。
+ */
+export const ALLOWED_HISTORY_HOURS = [0.167, 0.5, 1, 6, 12, 24, 48, 96, 168] as const
+
+/** 未登入用戶可用的最大歷史時長（超過會 401） */
+export const ANONYMOUS_MAX_HISTORY_HOURS = 24
+
+export function isAdminLoggedIn(): boolean {
+  return getLocalStorageValue('jwt_token').length > 0
+}
+
+/** 將任意 hours 規整為後端接受的白名單值，並按登入態封頂 */
+function normalizeHistoryHours(hours?: number): number {
+  const target = Number.isFinite(hours) ? Number(hours) : 24
+  let best: number = ALLOWED_HISTORY_HOURS.reduce<number>(
+    (acc, value) => (Math.abs(value - target) < Math.abs(acc - target) ? value : acc),
+    24,
+  )
+  if (!isAdminLoggedIn() && best > ANONYMOUS_MAX_HISTORY_HOURS)
+    best = ANONYMOUS_MAX_HISTORY_HOURS
+  return best
+}
+
+/**
+ * 將 ISO 時間範圍（start / end）轉換為「小時」數，再交由 normalizeHistoryHours 規整。
+ * CFSM 不支援 start/end 區間查詢，只能以 hours 白名單窗口近似。
+ * 未提供 end 時回退到 24h（與原始 getNodesLatestStatus 行為一致）。
+ */
+function hoursFromRange(start?: string, end?: string): number {
+  if (!start || !end)
+    return 24
+  const startMs = new Date(start).getTime()
+  const endMs = new Date(end).getTime()
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs)
+    return 24
+  const hours = Math.ceil((endMs - startMs) / 3600000)
+  return normalizeHistoryHours(hours)
 }
 
 function finiteNumber(value: unknown): number {
@@ -602,7 +673,73 @@ async function cfsmRequest<T>(path: string, timeoutMs = 30000): Promise<T> {
   }
 }
 
+/* ---------- /api/servers 共享快照（請求去重 + 短 TTL 緩存） ---------- */
+
+/**
+ * getNodes() 與 getNodesLatestStatus() 原本各自請求一次 /api/servers，
+ * 疊加輪詢後對 Cloudflare Worker 造成成倍請求量。此處做 in-flight 去重與
+ * 短 TTL 緩存，使同一輪數據獲取只產生一次真實 HTTP 請求。
+ */
+const SERVERS_SNAPSHOT_TTL_MS = 1200
+
+let serversSnapshot: { at: number, data: CfServersResponse } | null = null
+let serversInflight: Promise<CfServersResponse> | null = null
+
+async function fetchServersSnapshot(force = false): Promise<CfServersResponse> {
+  if (!force && serversSnapshot && Date.now() - serversSnapshot.at < SERVERS_SNAPSHOT_TTL_MS)
+    return serversSnapshot.data
+  if (serversInflight)
+    return serversInflight
+
+  serversInflight = cfsmRequest<CfServersResponse>('/api/servers')
+    .then((data) => {
+      serversSnapshot = { at: Date.now(), data: data ?? {} }
+      return serversSnapshot.data
+    })
+    .finally(() => {
+      serversInflight = null
+    })
+
+  return serversInflight
+}
+
+/** 讀取當前已緩存的快照（不觸發請求），供 WS 增量合併使用 */
+function peekServersSnapshot(): CfServersResponse | null {
+  return serversSnapshot?.data ?? null
+}
+
+/**
+ * WS batchUpdate 增量覆蓋層：serverId → 已合併的最新欄位。
+ * REST 快照提供靜態與完整欄位，WS 樣本提供高頻指標，二者疊加後生成 NodeStatus。
+ */
+const liveOverlay = new Map<string, Record<string, unknown>>()
+
+function applyLiveSamples(samples: WsSample[]): string[] {
+  const touched = new Set<string>()
+  for (const sample of samples) {
+    const merged = { ...(liveOverlay.get(sample.serverId) ?? {}), ...sample.data }
+    if (sample.ts)
+      merged.last_updated = sample.ts
+    liveOverlay.set(sample.serverId, merged)
+    touched.add(sample.serverId)
+  }
+  return [...touched]
+}
+
+/** 取得疊加了 WS 增量的伺服器物件 */
+function withLiveOverlay(server: CfServerWire): CfServerWire {
+  const overlay = liveOverlay.get(server.id)
+  return overlay ? { ...server, ...overlay } as CfServerWire : server
+}
+
 // ==================== RpcClient（接口與原版一致，底層為 CFSM） ====================
+
+/** WebSocket 實時樣本（batchUpdate 解析後的單條增量） */
+export interface WsSample {
+  serverId: string
+  ts: number
+  data: Record<string, unknown>
+}
 
 /** JSON-RPC 兼容客戶端殼（CFSM 無 RPC2 協議，方法經 HTTP 直連） */
 export class RpcClient {
@@ -612,16 +749,87 @@ export class RpcClient {
   private wsConnectPromise: Promise<void> | null = null
   /** 已註冊的伺服器 ID（subscribe=all 過濾用） */
   private registeredIds: string[] = []
+  /** 最近一次已向服務端發送的訂閱 ID（去重用） */
+  private subscribedIdsKey = ''
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  /** batchUpdate 樣本回調（由上層接入 nodesStore） */
+  private sampleListeners = new Set<(samples: WsSample[]) => void>()
 
   constructor(options: RpcClientOptions = {}) {
     this.timeout = options.timeout || 30000
     this.useWebSocket = options.useWebSocket || false
   }
 
-  /** 註冊需要訂閱的伺服器 ID */
+  /** 註冊需要訂閱的伺服器 ID；若已連線且列表變化則即時重發 subscribe */
   setRegisteredIds(ids: string[]): void {
     this.registeredIds = ids
+    if (this.ws && this.ws.readyState === WebSocket.OPEN)
+      this.sendSubscribe()
+  }
+
+  /** 訂閱 batchUpdate 實時樣本，返回取消訂閱函數 */
+  onSamples(listener: (samples: WsSample[]) => void): () => void {
+    this.sampleListeners.add(listener)
+    return () => this.sampleListeners.delete(listener)
+  }
+
+  /** 向服務端發送 subscribe 消息（帶當前 ids 列表；空列表不發，避免無效訂閱） */
+  private sendSubscribe(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN)
+      return
+    if (this.registeredIds.length === 0)
+      return
+    const key = this.registeredIds.join(',')
+    if (key === this.subscribedIdsKey)
+      return
+    this.subscribedIdsKey = key
+    try {
+      this.ws.send(JSON.stringify({ type: 'subscribe', scope: 'all', ids: this.registeredIds }))
+    }
+    catch { /* 忽略發送失敗，下次 setRegisteredIds 會重試 */ }
+  }
+
+  /** 解析並派發 batchUpdate 消息 */
+  private handleWsMessage(raw: unknown): void {
+    if (typeof raw !== 'string')
+      return
+    let msg: Record<string, unknown> | null = null
+    try {
+      msg = JSON.parse(raw) as Record<string, unknown>
+    }
+    catch {
+      return
+    }
+    if (!msg || msg.type !== 'batchUpdate' || !Array.isArray(msg.updates))
+      return
+
+    const samples: WsSample[] = []
+    for (const update of msg.updates as Array<Record<string, unknown>>) {
+      const serverId = String(update?.serverId ?? '')
+      if (!serverId || !Array.isArray(update.samples))
+        continue
+      // 按時間升序，最後一條為完整報告狀態。
+      // CFSM 線上推送的樣本位於 sample.payload（而非 sample.data），需兼容兩者。
+      const sorted = [...(update.samples as Array<Record<string, unknown>>)]
+        .filter(s => s && typeof s === 'object' && (s.data || s.payload))
+        .sort((a, b) => finiteNumber(a.ts) - finiteNumber(b.ts))
+      for (const sample of sorted) {
+        const sampleData = (sample.data ?? sample.payload) as Record<string, unknown>
+        samples.push({
+          serverId,
+          ts: timestamp(sample.ts ?? sampleData.last_updated),
+          data: sampleData,
+        })
+      }
+    }
+    if (samples.length === 0)
+      return
+    for (const listener of this.sampleListeners) {
+      try {
+        listener(samples)
+      }
+      catch { /* 單個監聽器異常不影響其它 */ }
+    }
   }
 
   /** 調用方法（CFSM 直接映射到 REST 端點） */
@@ -648,10 +856,20 @@ export class RpcClient {
       case 'common:getPublicInfo':
         return (await rpc.getPublicInfo()) as unknown as T
       case 'common:getRecords': {
-        const p = (params ?? {}) as { type: string, uuid?: string, hours?: number, task_id?: number, max_count?: number }
+        const p = (params ?? {}) as {
+          type: string
+          uuid?: string
+          hours?: number
+          task_id?: number
+          max_count?: number
+          start?: string
+          end?: string
+        }
+        // CFSM 不支援 start/end 區間查詢，統一換算為 hours 窗口
+        const hours = p.hours ?? hoursFromRange(p.start, p.end)
         if (p.type === 'ping')
-          return (await rpc.getPingRecords(p.task_id, p.hours, p.max_count)) as unknown as T
-        return (await rpc.getLoadRecords(p.uuid, p.hours, undefined, p.max_count)) as unknown as T
+          return (await rpc.getPingRecords(p.uuid, hours, p.max_count)) as unknown as T
+        return (await rpc.getLoadRecords(p.uuid, hours, undefined, p.max_count)) as unknown as T
       }
       default:
         throw new RpcError(-32601, `Method not found: ${method}`)
@@ -746,13 +964,12 @@ export class RpcClient {
           return
         }
         opened = true
-        // CFSM 推送模式：建連後提交訂閱 ID 列表
-        if (this.registeredIds.length > 0) {
-          socket.send(JSON.stringify({ type: 'subscribe', scope: 'all', ids: this.registeredIds }))
-        }
+        // CFSM 推送模式：subscribe=all 默認不推送任何更新，必須提交 ids 列表
+        this.subscribedIdsKey = ''
+        this.sendSubscribe()
         this.heartbeatTimer = setInterval(() => {
           if (socket.readyState === WebSocket.OPEN)
-            socket.send(JSON.stringify({ type: 'ping', ts: Date.now() }))
+            socket.send(JSON.stringify({ type: 'ping' }))
         }, 30000)
         resolve()
       }
@@ -763,13 +980,17 @@ export class RpcClient {
         reject(new RpcError(-32000, 'WebSocket connection error'))
       }
 
-      socket.onmessage = () => {
-        // CFSM 推送為 batchUpdate；數據更新由輪詢驅動，此處忽略內容
+      socket.onmessage = (event) => {
+        if (this.ws !== socket)
+          return
+        // CFSM 原生實時通道：消費 batchUpdate 增量樣本
+        this.handleWsMessage(event.data)
       }
 
       socket.onclose = () => {
         if (this.ws !== socket)
           return
+        this.subscribedIdsKey = ''
         if (this.heartbeatTimer) {
           clearInterval(this.heartbeatTimer)
           this.heartbeatTimer = null
@@ -833,20 +1054,48 @@ export class KomariRpc {
   }
 
   async getNodes(): Promise<Record<string, Client>> {
-    const response = await cfsmRequest<{ servers?: CfServerWire[] }>('/api/servers')
+    const response = await fetchServersSnapshot()
     const clients: Record<string, Client> = {}
     for (const server of response?.servers ?? [])
       clients[server.id] = adaptClient(server)
+    // 提交訂閱列表：subscribe=all 必須帶 ids 才會收到推送
     this.client.setRegisteredIds(Object.keys(clients))
     return clients
   }
 
   async getNodesLatestStatus(): Promise<Record<string, NodeStatus>> {
-    const response = await cfsmRequest<{ servers?: CfServerWire[] }>('/api/servers')
+    const response = await fetchServersSnapshot()
     const statuses: Record<string, NodeStatus> = {}
     for (const server of response?.servers ?? [])
-      statuses[server.id] = adaptStatus(server)
+      statuses[server.id] = adaptStatus(withLiveOverlay(server))
     return statuses
+  }
+
+  /**
+   * 訂閱 WebSocket 實時狀態更新。
+   *
+   * CFSM 的原生實時機制是 /api/ws 推送 batchUpdate；此處把增量樣本疊加到
+   * 最近一次 /api/servers 快照上，生成完整 NodeStatus 交給上層寫入 store，
+   * 從而無需高頻輪詢即可實時刷新。
+   */
+  onLiveStatus(callback: (statuses: Record<string, NodeStatus>) => void): () => void {
+    return this.client.onSamples((samples) => {
+      const touched = applyLiveSamples(samples)
+      if (touched.length === 0)
+        return
+      const snapshot = peekServersSnapshot()
+      if (!snapshot?.servers?.length)
+        return
+
+      const statuses: Record<string, NodeStatus> = {}
+      for (const server of snapshot.servers) {
+        if (!touched.includes(server.id))
+          continue
+        statuses[server.id] = adaptStatus(withLiveOverlay(server))
+      }
+      if (Object.keys(statuses).length > 0)
+        callback(statuses)
+    })
   }
 
   async getNodeRecentStatus(uuid: string, limit?: number): Promise<{ count: number, records: StatusRecord[] }> {
@@ -903,61 +1152,109 @@ export class KomariRpc {
   async getLoadRecords(uuid?: string, hours?: number, _loadType?: string, _maxCount?: number): Promise<{ records: StatusRecord[] }> {
     if (!uuid)
       return { records: [] }
-    const rows = await cfsmRequest<Array<Record<string, unknown>>>(`/api/history/all?id=${encodeURIComponent(uuid)}&hours=${hours ?? 24}`)
+    const safeHours = normalizeHistoryHours(hours)
+    const rows = await cfsmRequest<Array<Record<string, unknown>>>(
+      `/api/history/all?id=${encodeURIComponent(uuid)}&hours=${safeHours}`,
+    )
     return { records: (rows ?? []).map(row => adaptStatusRecord(uuid, row)) }
   }
 
-  async getPingRecords(_taskId?: number, hours?: number, _maxCount?: number): Promise<{ records: PingRecord[], tasks: Array<{ id: number, name: string, loss: number }> }> {
-    // CFSM 按節點查詢歷史；nodePing 摘要需要所有節點的 ping 記錄（按 client 區分）
-    const nodes = await this.getNodes()
-    const uuids = Object.keys(nodes)
-    // 限制並發，避免節點過多時請求爆炸
-    const batchSize = 6
+  /**
+   * 取得 Ping 記錄。
+   *
+   * CFSM 的 /api/servers 已內嵌 servers[].ping 與 servers[].loss（約 30 個採樣點），
+   * 因此首頁摘要與詳情頁短窗口都直接復用同一份快照，無需為每個節點單獨請求
+   * /api/history/all（原實現會產生 N+1 請求風暴）。
+   * 僅當需要更長歷史窗口（> 內嵌覆蓋範圍）且指定了節點時，才回源歷史接口。
+   */
+  async getPingRecords(uuid?: string, hours?: number, _maxCount?: number): Promise<{ records: PingRecord[], tasks: Array<{ id: number, name: string, loss: number }> }> {
+    const snapshot = await fetchServersSnapshot()
+    const allServers = snapshot?.servers ?? []
+    const servers = uuid ? allServers.filter(server => server.id === uuid) : allServers
+
+    const first = servers[0]
+    // CFSM 詳情頁延遲圖固定繪製 電信/聯通/移動 三網（ServerDetail.vue 的 PING_FIELD_DEFS），
+    // 不隨 show_three_net_details 開關切換；BGP 亦一併納入以對齊卡片層的 pingList。
+    // 因此此處恆定回傳全部 4 個探測任務，由圖表組件決定顯示哪些。
+    const PING_TASKS = [
+      { id: 1, key: 'ct', name: first?.custom_ct || '电信' },
+      { id: 2, key: 'cu', name: first?.custom_cu || '联通' },
+      { id: 3, key: 'cm', name: first?.custom_cm || '移动' },
+      { id: 4, key: 'bd', name: first?.custom_bd || 'BGP' },
+    ] as const
+    const activeTasks = PING_TASKS
+
     const records: PingRecord[] = []
     const taskLoss: Record<number, number[]> = {}
 
-    const PING_TASKS = [
-      { id: 1, key: 'ping_ct', name: '电信' },
-      { id: 2, key: 'ping_cu', name: '联通' },
-      { id: 3, key: 'ping_cm', name: '移动' },
-      { id: 4, key: 'ping_bd', name: 'BGP' },
-    ] as const
+    const pushPoint = (client: string, taskId: number, ts: number, latency: unknown, loss: unknown): void => {
+      const hasLatency = latency !== undefined && latency !== null
+      const lossValue = loss === undefined || loss === null ? 0 : finiteNumber(loss)
+      // 完全無數據（既無延遲也無丟包記錄）視為未探測，跳過
+      if (!hasLatency && (loss === undefined || loss === null))
+        return
+      const latencyValue = hasLatency ? finiteNumber(latency) : 0
+      records.push({
+        client,
+        task_id: taskId,
+        time: new Date(ts).toISOString(),
+        // -1 表示丟包/探測失敗，由圖表渲染為斷點
+        value: lossValue >= 100 || !hasLatency || latencyValue <= 0 ? -1 : latencyValue,
+      })
+      const losses = taskLoss[taskId] ?? []
+      losses.push(lossValue)
+      taskLoss[taskId] = losses
+    }
 
-    for (let i = 0; i < uuids.length; i += batchSize) {
-      const batch = uuids.slice(i, i + batchSize)
-      const results = await Promise.allSettled(batch.map(uuid =>
-        cfsmRequest<Array<Record<string, unknown>>>(`/api/history/all?id=${encodeURIComponent(uuid)}&hours=${hours ?? 1}`),
-      ))
+    // 判斷內嵌採樣是否已覆蓋所需窗口；不足時對單節點回源歷史接口
+    const requestedHours = normalizeHistoryHours(hours)
+    const embeddedSpanHours = (() => {
+      const points = first?.ping ?? []
+      if (points.length < 2)
+        return 0
+      const start = finiteNumber(points[0]?.ts)
+      const end = finiteNumber(points[points.length - 1]?.ts)
+      return end > start ? (end - start) / 3600000 : 0
+    })()
+    const needHistory = Boolean(uuid) && requestedHours > Math.max(embeddedSpanHours, 0.5)
 
-      results.forEach((result, index) => {
-        if (result.status !== 'fulfilled')
-          return
-        const uuid = batch[index]
-        for (const row of result.value ?? []) {
-          const time = new Date(timestamp(row.timestamp)).toISOString()
-          for (const task of PING_TASKS) {
-            const latencyValue = row[task.key]
-            if (latencyValue === undefined || latencyValue === null)
-              continue
-            const lossValue = finiteNumber(row[`loss_${task.key.replace('ping_', '')}`])
-            const latency = finiteNumber(latencyValue)
-            records.push({
-              client: uuid,
-              task_id: task.id,
-              time,
-              value: lossValue >= 100 || latency <= 0 ? -1 : latency,
-            })
-            const losses = taskLoss[task.id] ?? []
-            losses.push(lossValue)
-            taskLoss[task.id] = losses
+    if (needHistory && uuid) {
+      const rows = await cfsmRequest<Array<Record<string, unknown>>>(
+        `/api/history/all?id=${encodeURIComponent(uuid)}&hours=${requestedHours}`,
+      )
+      for (const row of rows ?? []) {
+        const ts = timestamp(row.timestamp)
+        for (const task of activeTasks)
+          pushPoint(uuid, task.id, ts, row[`ping_${task.key}`], row[`loss_${task.key}`])
+      }
+    }
+    else {
+      for (const server of servers) {
+        const pingPoints = server.ping ?? []
+        const lossPoints = server.loss ?? []
+        const lossByTs = new Map<number, CfPingPoint>()
+        for (const point of lossPoints)
+          lossByTs.set(finiteNumber(point?.ts), point)
+
+        for (const point of pingPoints) {
+          const ts = finiteNumber(point?.ts)
+          const lossPoint = lossByTs.get(ts)
+          for (const task of activeTasks) {
+            pushPoint(
+              server.id,
+              task.id,
+              ts,
+              point?.[task.key as keyof CfPingPoint],
+              lossPoint?.[task.key as keyof CfPingPoint],
+            )
           }
         }
-      })
+      }
     }
 
     return {
       records,
-      tasks: PING_TASKS.map(task => ({
+      tasks: activeTasks.map(task => ({
         id: task.id,
         name: task.name,
         loss: (taskLoss[task.id] ?? []).reduce((sum, value) => sum + value, 0) / Math.max(1, taskLoss[task.id]?.length ?? 0),

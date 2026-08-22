@@ -29,6 +29,13 @@ const DEFAULT_CONFIG: Required<InitConfig> = {
   postFailureThreshold: 3,
 }
 
+/**
+ * WebSocket 已連接並持續推送 batchUpdate 時，輪詢降速為「協調窗口」：
+ * 實時指標由 WS 驅動，輪詢僅用於校正客戶端元數據與偶發漂移，避免對
+ * Cloudflare Worker 造成 1s 級的高頻請求壓力。
+ */
+const RECONCILE_POLL_INTERVAL_MS = 30000
+
 /** 初始化状态管理 */
 class InitManager {
   private config: Required<InitConfig>
@@ -43,6 +50,8 @@ class InitManager {
   private useWebSocket: boolean | null = null // 根据主题配置决定
   private postFailureCount = 0
   private stopPollIntervalWatch: (() => void) | null = null
+  /** WebSocket 實時狀態訂閱的取消函數（常駐，註冊一次） */
+  private wsLiveStatusOff: (() => void) | null = null
 
   constructor(config: InitConfig = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
@@ -61,10 +70,12 @@ class InitManager {
 
   /**
    * 获取轮询间隔（毫秒）
-   * HTTP 和 WebSocket 都使用主题配置的刷新间隔。
-   * WebSocket 在这里是 RPC 传输层，不会主动推送节点状态，因此不能降低轮询频率。
+   * WebSocket 已連接並持續推送 batchUpdate 時，降速為協調窗口（30s），
+   * 實時指標由 WS 驅動；未連接 WS（HTTP 模式或重連中）則使用主題配置的刷新間隔。
    */
   private getPollInterval(): number {
+    if (this.useWebSocket === true && this.nodesStore.wsConnectionState === 'connected')
+      return RECONCILE_POLL_INTERVAL_MS
     return this.appStore.dataUpdateInterval * 1000
   }
 
@@ -276,6 +287,18 @@ class InitManager {
     this.useWebSocket = configuredMode === 'websocket'
 
     if (this.useWebSocket) {
+      // 訂閱 WebSocket 實時狀態推送（僅註冊一次；監聽器常駐於 RpcClient 單例）。
+      // CFSM 的 batchUpdate 增量會在此合併到最新 /api/servers 快照並直接寫入 store，
+      // 使首頁與詳情頁無需高頻輪詢即可即時刷新。
+      if (!this.wsLiveStatusOff) {
+        this.wsLiveStatusOff = this.rpc.onLiveStatus((statuses) => {
+          if (this.isDestroyed)
+            return
+          this.nodesStore.updateNodeStatuses(statuses)
+          this.postFailureCount = 0
+          this.appStore.connectionError = false
+        })
+      }
       // 尝试建立 WebSocket 连接
       this.connectWebSocket()
     }
@@ -319,6 +342,9 @@ class InitManager {
 
       // 连接成功，重置错误状态
       this.appStore.connectionError = false
+
+      // WS 已驅動實時推送，將輪詢降速為協調窗口（30s）以減輕 Worker 負載
+      this.startPolling()
 
       // 监听连接状态变化
       this.monitorWebSocketConnection()
@@ -414,6 +440,9 @@ class InitManager {
     client.setTransport(false)
     client.close()
 
+    // 回落後輪詢恢復主題配置的刷新間隔（getPollInterval 已因 useWebSocket=false 而切回）
+    this.startPolling()
+
     // 显示提示
     window.$message?.warning('WebSocket 无法连接，尝试回落 POST 模式。')
   }
@@ -434,8 +463,9 @@ class InitManager {
   /**
    * 执行轮询任务
    *
-   * 每次轮询都通过当前 RPC 传输层获取最新节点状态。
-   * WebSocket 连接仅负责承载 RPC 请求，不依赖后端主动推送状态。
+   * 每輪只發起一次 /api/servers 請求（getNodes 與 getNodesLatestStatus 透過
+   * 共享快照緩存合併為同一 HTTP 調用）。實時指標由 WebSocket batchUpdate 驅動，
+   * 輪詢僅作為協調/兜底；WS 連接期間間隔已降速為 RECONCILE_POLL_INTERVAL_MS。
    */
   private async poll(): Promise<void> {
     if (this.isPolling) {
@@ -445,13 +475,11 @@ class InitManager {
     this.isPolling = true
 
     try {
-      // 并行执行三个请求
-      const [, clientsResult, statusesResult] = await Promise.all([
-        // 1. Ping 测试服务器状态
-        this.rpc.ping(),
-        // 2. 获取节点信息
+      // 并行获取节点信息与最新状态（共享快照，仅一次 HTTP 请求）
+      const [clientsResult, statusesResult] = await Promise.all([
+        // 1. 获取节点信息
         this.rpc.getNodes() as Promise<Record<string, Client>>,
-        // 3. 获取节点最新状态
+        // 2. 获取节点最新状态
         this.rpc.getNodesLatestStatus() as Promise<Record<string, NodeStatus>>,
       ])
 
@@ -540,6 +568,8 @@ class InitManager {
     this.postFailureCount = 0
     this.stopPollIntervalWatch?.()
     this.stopPollIntervalWatch = null
+    this.wsLiveStatusOff?.()
+    this.wsLiveStatusOff = null
     this.stopPolling()
     this.rpc.close()
     this.nodesStore.clearNodes()
