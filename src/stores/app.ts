@@ -757,12 +757,25 @@ const useAppStore = defineStore('app', () => {
             window.$message?.error('登录状态已失效，主题设置未保存')
           }
           else if (error instanceof ApiError && error.message.includes('只读')) {
-            // CFSM theme_options 只讀：提示管理員到後台修改
+            // CFSM theme_options 只讀：提示管理員到後台修改，
+            // 同時把本次變更回退到本地覆蓋，令當前客戶端仍生效。
             window.$message?.info('CF-Server-Monitor 主題配置為只讀，請到後台「主題自定義配置 JSON」修改')
+            appearanceSettingsOverrides.value = {
+              ...appearanceSettingsOverrides.value,
+              ...patch,
+            }
+            localOverrideBaseSignature.value = managedSettingsSignature.value
           }
           else {
             console.error('[appStore] 保存主题设置失败:', error)
             window.$message?.error('主题设置保存失败，请稍后重试')
+            // 後端非預期錯誤（如 500、網絡故障）：把本次變更回退到本地覆蓋，
+            // 避免用戶以為「調咗唔生效」（實際是 admin 模式下改了但後端沒收）。
+            appearanceSettingsOverrides.value = {
+              ...appearanceSettingsOverrides.value,
+              ...patch,
+            }
+            localOverrideBaseSignature.value = managedSettingsSignature.value
           }
           queuedSave = null
           break

@@ -58,7 +58,14 @@ const safePoliceUrl = computed(() => sanitizeNavigationUrl(appStore.policeUrl))
           <span class="material-symbols-rounded">monitor_heart</span>
         </span>
         <span class="material-footer__brand-copy">
-          <strong>CFSM Material</strong>
+          <a
+            class="material-footer__brand-link"
+            href="https://github.com/Ebxh/cfsm-theme-material"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <strong>CFSM Material</strong>
+          </a>
           <span>Material Design 3 theme for CF-Server-Monitor</span>
         </span>
       </div>
@@ -145,6 +152,19 @@ const safePoliceUrl = computed(() => sanitizeNavigationUrl(appStore.policeUrl))
   font-weight: var(--md-sys-typescale-title-small-weight);
   line-height: var(--md-sys-typescale-title-small-line-height);
   letter-spacing: var(--md-sys-typescale-title-small-tracking);
+}
+
+.material-footer__brand-link {
+  color: inherit;
+  text-decoration: none;
+  border-radius: 6px;
+  transition: color var(--md-app-motion-duration-short) var(--md-app-motion-easing-standard);
+}
+
+.material-footer__brand-link:hover,
+.material-footer__brand-link:focus-visible {
+  color: var(--md-sys-color-primary);
+  outline: none;
 }
 
 .material-footer__brand-copy > span {

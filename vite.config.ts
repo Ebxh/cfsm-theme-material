@@ -27,7 +27,7 @@ export default defineConfig(({ mode }) => {
     // 默認相對路徑，同源部署 / 子路徑部署均可直接使用
     base: env.BASE_PATH || './',
     define: {
-      __BUILD_VERSION__: JSON.stringify(process.env.npm_package_version || '1.0.2'),
+      __BUILD_VERSION__: JSON.stringify(process.env.npm_package_version || '1.0.3'),
       __BUILD_GIT_HASH__: JSON.stringify('cfsm'),
     },
     plugins: [
