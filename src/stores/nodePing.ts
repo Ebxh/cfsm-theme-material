@@ -47,7 +47,7 @@ interface TaskRecordSummary {
 const PING_STATS_HOURS = 1
 const PING_REFRESH_INTERVAL_MS = 60_000
 const NODE_PING_BAR_COUNT = 10
-const CACHE_VERSION = 6
+const CACHE_VERSION = 7
 const CACHE_KEY_PREFIX = 'komari-theme-material:node-ping-stats'
 const FULL_LOSS_EPSILON = 1e-6
 
@@ -349,13 +349,20 @@ export const useNodePingStore = defineStore('nodePing', () => {
 
     pendingRequest = (async () => {
       try {
-        const result = await rpc.getClient().call<PingRecordsResponse>('common:getRecords', {
-          type: 'ping',
-          hours: PING_STATS_HOURS,
-        })
+        // CFSM 沒有 Komari 的 `common:getRecords` RPC；改用適配層的 `getPingRecords()`，
+        // 該方法內部走 `/api/servers` 內嵌 ping/loss 快照，回傳的 PingRecord 已使用與
+        // buildStats 一致的 value 編碼（>=0 為延遲，-1 為丟包），可直接餵入 store。
+        const result = await rpc.getPingRecords(undefined, PING_STATS_HOURS)
 
         recordsByClient.value = buildRecordsByClient(result?.records ?? [])
-        tasks.value = result?.tasks ?? []
+        // CFSM 的 tasks 形狀為 {id, name, loss}（無 interval），buildStats 僅讀取
+        // id→name 建立 taskNameMap，缺少 interval 對結果無影響，故補 0 即可。
+        tasks.value = (result?.tasks ?? []).map(t => ({
+          id: t.id,
+          name: t.name,
+          interval: 0,
+          loss: t.loss,
+        }))
         lastFetchedAt.value = Date.now()
         fetchStatus.value = 'success'
       }
