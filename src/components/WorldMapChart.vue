@@ -8,6 +8,7 @@ import { feature } from 'topojson-client'
 import { computed } from 'vue'
 import VChart from 'vue-echarts'
 import worldAtlas from 'world-atlas/countries-110m.json'
+import compliantChina from '@/assets/world-china-compliant.json'
 import { useAppStore } from '@/stores/app'
 import '@/utils/echarts'
 
@@ -20,6 +21,39 @@ const emit = defineEmits<{
 }>()
 
 const worldMapGeoJson = feature(worldAtlas, worldAtlas.objects.countries as GeometryCollection)
+
+interface CompliantChinaFeature {
+  type: string
+  properties: Record<string, unknown>
+  geometry: { type: string, coordinates: unknown }
+}
+
+/**
+ * 中國地圖合規（對照中華人民共和國自然資源部標準地圖，審圖號 GS(2023)2767）：
+ * - 移除 Natural Earth 的獨立「中國」(156) 與「台灣」(158) feature；
+ * - 替換為標準地圖數據的中國輪廓（含台灣省、港澳、釣魚島、赤尾嶼等島嶼，邊界
+ *   已按標準地圖調整黑瞎子島、藏南地區等）；
+ * - 另加「南海諸島」feature（十段線），配合 geo regions 虛線邊框渲染。
+ */
+function buildCompliantWorldGeoJson(geoJson: typeof worldMapGeoJson): typeof worldMapGeoJson {
+  const compliantFeatures = (compliantChina as { features: CompliantChinaFeature[] }).features
+  const filtered = geoJson.features.filter((country) => {
+    const id = String((country as { id?: unknown }).id ?? '')
+    return id !== '156' && id !== '158'
+  })
+
+  return {
+    ...geoJson,
+    features: [
+      ...filtered,
+      ...compliantFeatures.map(featureItem => ({
+        type: featureItem.type as 'Feature',
+        properties: featureItem.properties,
+        geometry: featureItem.geometry as typeof worldMapGeoJson.features[number]['geometry'],
+      })),
+    ],
+  }
+}
 
 function normalizeAntimeridianRing(ring: number[][]): number[][] {
   const normalized: number[][] = []
@@ -71,7 +105,8 @@ function normalizeWorldMapGeoJson(geoJson: typeof worldMapGeoJson): typeof world
   return normalized
 }
 
-const normalizedWorldMapGeoJson = normalizeWorldMapGeoJson(worldMapGeoJson)
+const compliantWorldMapGeoJson = buildCompliantWorldGeoJson(worldMapGeoJson)
+const normalizedWorldMapGeoJson = normalizeWorldMapGeoJson(compliantWorldMapGeoJson)
 registerMap('komari-world', normalizedWorldMapGeoJson as Parameters<typeof registerMap>[1])
 
 const appStore = useAppStore()
@@ -173,23 +208,35 @@ const chartOption = computed(() => ({
       borderColor: chartColors.value.landBorder,
       borderWidth: 0.7,
     },
-    regions: props.markers.map(marker => ({
-      name: marker.mapName,
-      itemStyle: {
-        areaColor: getMarkerColor(marker),
-        borderColor: getMarkerColor(marker),
-        borderWidth: 1.15,
-        opacity: marker.onlineCount > 0 ? 0.42 : 0.28,
-      },
-      emphasis: {
+    regions: [
+      ...props.markers.map(marker => ({
+        name: marker.mapName,
         itemStyle: {
           areaColor: getMarkerColor(marker),
-          borderColor: chartColors.value.text,
-          borderWidth: 1.5,
-          opacity: 0.62,
+          borderColor: getMarkerColor(marker),
+          borderWidth: 1.15,
+          opacity: marker.onlineCount > 0 ? 0.42 : 0.28,
+        },
+        emphasis: {
+          itemStyle: {
+            areaColor: getMarkerColor(marker),
+            borderColor: chartColors.value.text,
+            borderWidth: 1.5,
+            opacity: 0.62,
+          },
+        },
+      })),
+      // 南海諸島十段線：透明填充 + 虛線邊框，對照標準地圖
+      {
+        name: '南海诸岛',
+        itemStyle: {
+          areaColor: 'transparent',
+          borderColor: chartColors.value.landBorder,
+          borderWidth: 1,
+          borderType: 'dashed' as const,
         },
       },
-    })),
+    ],
     emphasis: {
       itemStyle: {
         areaColor: chartColors.value.land,

@@ -549,7 +549,10 @@ const useAppStore = defineStore('app', () => {
     if (settings && typeof settings.backgroundEnabled === 'boolean') {
       return settings.backgroundEnabled
     }
-    return false
+    // 半透明卡片表面視為需要背景：即使用戶未手動開啟壁紙，也自動激活
+    // 背景管道（內建漸變 + 卡片 blur + 卡片透明度），令「卡片不透明度」等
+    // 外觀設定立即可見；用戶明確關閉 backgroundEnabled 時仍以用戶為準。
+    return cardSurfaceStyle.value === 'translucent'
   })
 
   const backgroundType = computed<'image' | 'video'>(() => {

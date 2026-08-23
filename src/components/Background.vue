@@ -221,13 +221,23 @@ onUnmounted(() => {
   height: 100%;
 }
 
-// 默认背景：使用 Material tonal surface，避免在未配置壁纸时引入额外视觉风格。
+// 默认背景：使用 Material tonal 柔和渐变。
+// 半透明卡片表面（glass）需要背景有明暗变化，透明度/模糊才有可见效果；
+// 若用纯色，半透明卡片在平板上几乎等同实色，用户调「卡片不透明度」会以为不生效。
 .background-default {
-  background: var(--md-sys-color-surface-container-lowest);
+  background:
+    radial-gradient(120% 90% at 12% 8%, color-mix(in srgb, var(--md-sys-color-primary) 10%, transparent) 0%, transparent 42%),
+    radial-gradient(110% 85% at 92% 16%, color-mix(in srgb, var(--md-sys-color-tertiary) 10%, transparent) 0%, transparent 46%),
+    radial-gradient(130% 100% at 50% 110%, color-mix(in srgb, var(--md-sys-color-secondary) 10%, transparent) 0%, transparent 55%),
+    var(--md-sys-color-surface-container-lowest);
 }
 
 .background-container.is-dark .background-default {
-  background: var(--md-sys-color-surface-dim);
+  background:
+    radial-gradient(120% 90% at 12% 8%, color-mix(in srgb, var(--md-sys-color-primary) 12%, transparent) 0%, transparent 42%),
+    radial-gradient(110% 85% at 92% 16%, color-mix(in srgb, var(--md-sys-color-tertiary) 12%, transparent) 0%, transparent 46%),
+    radial-gradient(130% 100% at 50% 110%, color-mix(in srgb, var(--md-sys-color-secondary) 12%, transparent) 0%, transparent 55%),
+    var(--md-sys-color-surface-dim);
 }
 
 .background-loading {

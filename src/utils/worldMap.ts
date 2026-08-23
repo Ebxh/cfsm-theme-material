@@ -24,6 +24,10 @@ const WORLD_MAP_NAME_OVERRIDES: Record<string, string> = {
   CG: 'Congo',
   CZ: 'Czechia',
   US: 'United States of America',
+  // 港澳台地區均歸屬中國地圖 feature（符合一個中國原則），節點高亮中國區域
+  HK: 'China',
+  MO: 'China',
+  TW: 'China',
 }
 
 const WORLD_MAP_COORDINATES: Record<string, WorldMapCoordinate> = {

@@ -1,7 +1,7 @@
 {
   "name": "cfsm-theme-material",
   "type": "module",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "A Material Design 3 theme for CF-Server-Monitor — 1:1 port of Komari-Material",
   "license": "MIT",
