@@ -60,13 +60,21 @@ const safePoliceUrl = computed(() => sanitizeNavigationUrl(appStore.policeUrl))
         <span class="material-footer__brand-copy">
           <a
             class="material-footer__brand-link"
-            href="https://github.com/Ebxh/cfsm-theme-material"
+            href="https://github.com/Ebxh/cfsm-theme-material/"
             target="_blank"
             rel="noopener noreferrer"
           >
             <strong>CFSM Material</strong>
           </a>
-          <span>Material Design 3 theme for CF-Server-Monitor</span>
+          <span>
+            Material Design 3 theme for
+            <a
+              class="material-footer__brand-link"
+              href="https://github.com/huilang-me/CF-Server-Monitor"
+              target="_blank"
+              rel="noopener noreferrer"
+            >CF-Server-Monitor</a>
+          </span>
         </span>
       </div>
 

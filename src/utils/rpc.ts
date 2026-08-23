@@ -8,12 +8,12 @@
  *  - getNodesLatestStatus → GET /api/servers（status 部分）
  *  - getNodeRecentStatus  → GET /api/server?id=
  *  - getLoadRecords  → GET /api/history/all?id=&hours=
- *  - getPingRecords  → GET /api/history/all（ping_ct/cu/cm/bd）
- *  - WebSocket       → /api/ws?subscribe=all（推送模式，用於狀態指示）
+ *  - getPingRecords  → 首頁使用 /api/servers 內嵌 ping/loss；詳情頁使用 /api/history/all
+ *  - WebSocket       → /api/ws?subscribe=all 或 /api/ws?subscribe=<id>
  *
  * 原始版權：Komari-Material Copyright (c) 2026 Liebesfreud（MIT）
  */
-import { getSharedApi } from '@/utils/api'
+import { fetchCfsmConfig, getSharedApi } from '@/utils/api'
 
 // ==================== 类型定义（与原版一致） ====================
 
@@ -477,6 +477,16 @@ function getGpuName(raw: unknown): string {
   return String(raw)
 }
 
+function normalizeTags(value: unknown): string {
+  if (Array.isArray(value))
+    return value.map(item => String(item).trim()).filter(Boolean).join(';')
+  return String(value ?? '')
+    .split(/[,;]/)
+    .map(tag => tag.trim())
+    .filter(Boolean)
+    .join(';')
+}
+
 function adaptClient(server: CfServerWire): Client {
   const billing = parsePriceAmount(server.price)
   const explicitCycle = parseBillingCycle(server.billing_cycle)
@@ -509,7 +519,7 @@ function adaptClient(server: CfServerWire): Client {
     currency: currency || 'CNY',
     expired_at: server.expire_date || '9999-12-31',
     group: server.server_group || '默认分组',
-    tags: server.tags || '',
+    tags: normalizeTags(server.tags),
     hidden: false,
     traffic_limit: parseTrafficLimit(server.traffic_limit),
     traffic_limit_type: trafficLimitType(server.traffic_calc_type),
@@ -689,6 +699,11 @@ const SERVERS_SNAPSHOT_TTL_MS = 1200
 
 let serversSnapshot: { at: number, data: CfServersResponse } | null = null
 let serversInflight: Promise<CfServersResponse> | null = null
+const serverBaseById = new Map<string, CfServerWire>()
+
+function rememberServerBase(server: CfServerWire): void {
+  serverBaseById.set(server.id, server)
+}
 
 async function fetchServersSnapshot(force = false): Promise<CfServersResponse> {
   if (!force && serversSnapshot && Date.now() - serversSnapshot.at < SERVERS_SNAPSHOT_TTL_MS)
@@ -699,6 +714,8 @@ async function fetchServersSnapshot(force = false): Promise<CfServersResponse> {
   serversInflight = cfsmRequest<CfServersResponse>('/api/servers')
     .then((data) => {
       serversSnapshot = { at: Date.now(), data: data ?? {} }
+      for (const server of serversSnapshot.data.servers ?? [])
+        rememberServerBase(server)
       return serversSnapshot.data
     })
     .finally(() => {
@@ -706,11 +723,6 @@ async function fetchServersSnapshot(force = false): Promise<CfServersResponse> {
     })
 
   return serversInflight
-}
-
-/** 讀取當前已緩存的快照（不觸發請求），供 WS 增量合併使用 */
-function peekServersSnapshot(): CfServersResponse | null {
-  return serversSnapshot?.data ?? null
 }
 
 /**
@@ -1046,6 +1058,10 @@ export class RpcClient {
   getWebSocket(): WebSocket | null {
     return this.ws
   }
+
+  getTimeout(): number {
+    return this.timeout
+  }
 }
 
 // ==================== KomariRpc（接口與原版一致） ====================
@@ -1070,7 +1086,7 @@ export class KomariRpc {
   }
 
   async ping(timeoutMs?: number): Promise<string> {
-    await cfsmRequest('/api/config', timeoutMs ?? this.client.timeout)
+    await fetchCfsmConfig(timeoutMs ?? this.client.getTimeout())
     return 'pong'
   }
 
@@ -1096,25 +1112,33 @@ export class KomariRpc {
     return statuses
   }
 
+  async getNodeSnapshot(uuid: string): Promise<{ client: Client, status: NodeStatus }> {
+    const server = await cfsmRequest<CfServerWire>(`/api/server?id=${encodeURIComponent(uuid)}`)
+    rememberServerBase(server)
+    this.client.setRegisteredIds([uuid])
+    return {
+      client: adaptClient(server),
+      status: adaptStatus(withLiveOverlay(server)),
+    }
+  }
+
   /**
    * 訂閱 WebSocket 實時狀態更新。
    *
    * CFSM 的原生實時機制是 /api/ws 推送 batchUpdate；此處把增量樣本疊加到
-   * 最近一次 /api/servers 快照上，生成完整 NodeStatus 交給上層寫入 store，
-   * 從而無需高頻輪詢即可實時刷新。
+   * 已知的 REST 基礎快照上（首頁 /api/servers；詳情頁 /api/server?id=），
+   * 生成完整 NodeStatus 交給上層寫入 store，無需 HTTP 定時輪詢。
    */
   onLiveStatus(callback: (statuses: Record<string, NodeStatus>) => void): () => void {
     return this.client.onSamples((samples) => {
       const touched = applyLiveSamples(samples)
       if (touched.length === 0)
         return
-      const snapshot = peekServersSnapshot()
-      if (!snapshot?.servers?.length)
-        return
 
       const statuses: Record<string, NodeStatus> = {}
-      for (const server of snapshot.servers) {
-        if (!touched.includes(server.id))
+      for (const uuid of touched) {
+        const server = serverBaseById.get(uuid)
+        if (!server)
           continue
         statuses[server.id] = adaptStatus(withLiveOverlay(server))
       }
@@ -1157,7 +1181,7 @@ export class KomariRpc {
   }
 
   async getBackendVersion(): Promise<VersionInfo> {
-    const config = await cfsmRequest<{ version?: string }>('/api/config')
+    const config = await fetchCfsmConfig(this.client.getTimeout())
     return { version: config?.version || '', hash: '' }
   }
 
@@ -1187,19 +1211,11 @@ export class KomariRpc {
   /**
    * 取得 Ping 記錄。
    *
-   * CFSM 的 /api/servers 已內嵌 servers[].ping 與 servers[].loss（約 30 個採樣點），
-   * 因此首頁摘要與詳情頁短窗口都直接復用同一份快照，無需為每個節點單獨請求
-   * /api/history/all（原實現會產生 N+1 請求風暴）。
-   * 僅當需要更長歷史窗口（> 內嵌覆蓋範圍）且指定了節點時，才回源歷史接口。
-   */
-  /**
-   * 取得 Ping 記錄。
-   *
    * - 指定 uuid（詳情頁）：直接回源 /api/history/all?id=<uuid>&hours=，不再先拉整個
    *   /api/servers 快照，避免重複/冗餘請求（CFSM 的 show_three_net_details=false 亦
    *   不會內嵌 ping[]，快照對單節點查詢並無用處）。
    * - 無指定 uuid（首頁摘要）：用 /api/servers 快照內嵌歷史；CFSM 內嵌為空時逐節點
-   *   回源 /api/history/all 以取得 ~30 個採樣點供 sparkline 使用，失敗才退單點。
+   *   退為當前 ping 與 loss 單點，避免首頁 N+1 歷史請求。
    */
   async getPingRecords(uuid?: string, hours?: number, _maxCount?: number): Promise<{ records: PingRecord[], tasks: Array<{ id: number, name: string, loss: number }> }> {
     const requestedHours = normalizeHistoryHours(hours)
@@ -1276,40 +1292,16 @@ export class KomariRpc {
           }
         }
         else {
-          // CFSM 2.8+ 在 show_three_net_details=false 時不再內嵌 ping/loss 歷史陣列；
-          // 此時若無歷史，sparkline 只會得一個點、無法顯示趨勢。自動回源
-          // /api/history/all 取得 ~30 個採樣點供曲線使用，失敗才退單點。
-          let usedHistory = false
-          try {
-            const rows = await cfsmRequest<Array<Record<string, unknown>>>(
-              `/api/history/all?id=${encodeURIComponent(server.id)}&hours=${requestedHours}`,
+          const ts = timestamp(server.last_updated || server.timestamp)
+          const serverRecord = server as Record<string, unknown>
+          for (const task of activeTasks) {
+            pushPoint(
+              server.id,
+              task.id,
+              ts,
+              serverRecord[`ping_${task.key}`],
+              serverRecord[`loss_${task.key}`],
             )
-            if (rows && rows.length > 0) {
-              for (const row of rows) {
-                const ts = timestamp(row.timestamp)
-                for (const task of activeTasks)
-                  pushPoint(server.id, task.id, ts, row[`ping_${task.key}`], row[`loss_${task.key}`])
-              }
-              usedHistory = true
-            }
-          }
-          catch {
-            // 忽略：退下一步用單點兜底
-          }
-
-          if (!usedHistory) {
-            // 退路：僅用當前 ping_*/loss_* 單點值，令卡片摘要至少可顯示即時數值
-            const ts = timestamp(server.last_updated || server.timestamp)
-            const serverRecord = server as Record<string, unknown>
-            for (const task of activeTasks) {
-              pushPoint(
-                server.id,
-                task.id,
-                ts,
-                serverRecord[`ping_${task.key}`],
-                serverRecord[`loss_${task.key}`],
-              )
-            }
           }
         }
       }

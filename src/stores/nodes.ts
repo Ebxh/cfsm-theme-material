@@ -402,6 +402,53 @@ const useNodesStore = defineStore('nodes', () => {
   }
 
   /**
+   * 更新或插入单个节点，不移除其他节点。
+   * 详情页聚焦单节点时用于合并 /api/server?id= 返回值，避免触发全量 /api/servers。
+   */
+  function upsertNode(client: Client, status?: NodeStatus): void {
+    const index = nodes.value.findIndex(n => n.uuid === client.uuid)
+    const baseNode = createNodeFromClient(client)
+    const nextNode = status
+      ? updateNodeStatus(baseNode, extractStatusData(status))
+      : baseNode
+
+    if (index !== -1) {
+      const currentNode = nodes.value[index]
+      if (!currentNode)
+        return
+      nodes.value[index] = status
+        ? nextNode
+        : updateNodeStatus(nextNode, {
+            online: currentNode.online,
+            time: currentNode.time,
+            cpu: currentNode.cpu,
+            gpu: currentNode.gpu,
+            ram: currentNode.ram,
+            swap: currentNode.swap,
+            load: currentNode.load,
+            load5: currentNode.load5,
+            load15: currentNode.load15,
+            temp: currentNode.temp,
+            disk: currentNode.disk,
+            net_in: currentNode.net_in,
+            net_out: currentNode.net_out,
+            net_total_up: currentNode.net_total_up,
+            net_total_down: currentNode.net_total_down,
+            process: currentNode.process,
+            connections: currentNode.connections,
+            connections_udp: currentNode.connections_udp,
+            uptime: currentNode.uptime,
+          })
+    }
+    else {
+      nodes.value.push(nextNode)
+    }
+
+    sortNodesByWeight()
+    recordNetworkRateSample()
+  }
+
+  /**
    * 更新 WebSocket 连接状态
    */
   function updateWsState(state: WsConnectionState, attempts?: number): void {
@@ -434,6 +481,7 @@ const useNodesStore = defineStore('nodes', () => {
     initNodes,
     updateNodeStatuses,
     updateNodeClients,
+    upsertNode,
     sortNodesByWeight,
     updateWsState,
     clearNodes,

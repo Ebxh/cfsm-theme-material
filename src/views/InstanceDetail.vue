@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import type { HistoryRowWire } from '@/utils/api'
 import { useAppStore } from '@/stores/app'
 import { useNodesStore } from '@/stores/nodes'
-import { getSharedRpc } from '@/utils/rpc'
+import { adaptHistoryRowsToLoadRecords, adaptHistoryRowsToPingRecords, getSharedApi } from '@/utils/api'
+import { setFocusedNodeId } from '@/utils/init'
 import { formatBytesPerSecondWithConfig, formatBytesWithConfig, formatDateTime, formatUptimeWithFormat } from '@/utils/helper'
 import { getOSImage, getOSName } from '@/utils/osImageHelper'
 import { getRegionCode, getRegionDisplayName } from '@/utils/regionHelper'
+import { getSharedRpc } from '@/utils/rpc'
 
 const LoadChart = defineAsyncComponent(() => import('@/components/LoadChart.vue'))
 const PingChart = defineAsyncComponent(() => import('@/components/PingChart.vue'))
@@ -16,23 +19,52 @@ const router = useRouter()
 const appStore = useAppStore()
 const nodesStore = useNodesStore()
 const chartView = ref<'load' | 'ping'>('load')
+const api = getSharedApi()
+const rpc = getSharedRpc()
+
+// CFSM /api/history/all 支持的固定窗口；详情页负载和延迟共享同一选择状态。
+const historyViews = [
+  { label: '10M', hours: 0.167 },
+  { label: '30M', hours: 0.5 },
+  { label: '1H', hours: 1 },
+  { label: '6H', hours: 6 },
+  { label: '12H', hours: 12 },
+  { label: '24H', hours: 24 },
+  { label: '2D', hours: 48 },
+  { label: '4D', hours: 96 },
+  { label: '7D', hours: 168 },
+]
+const selectedHistoryView = ref('10M')
+const selectedHistoryHours = computed(() => {
+  const view = historyViews.find(item => item.label === selectedHistoryView.value)
+  return view?.hours ?? 0.167
+})
+const historyRows = shallowRef<HistoryRowWire[]>([])
+const historyLoading = ref(false)
+const historyError = ref<string | null>(null)
+let latestHistoryFetchId = 0
+let stopHistorySamples: (() => void) | null = null
 
 // 詳情頁聚焦單一節點：WS 改為 subscribe=<id>，只接收該節點的實時推送
 watch(
   () => route.params.id,
   (id) => {
     const uuid = typeof id === 'string' && id ? id : null
-    getSharedRpc().getClient().setWsFocus(uuid)
+    setFocusedNodeId(uuid)
   },
   { immediate: true },
 )
 
 onBeforeUnmount(() => {
-  getSharedRpc().getClient().setWsFocus(null)
+  setFocusedNodeId(null)
+  latestHistoryFetchId += 1
+  stopHistorySamples?.()
+  stopHistorySamples = null
 })
 
 onMounted(() => {
   window.scrollTo({ top: 0, behavior: 'instant' })
+  stopHistorySamples = rpc.getClient().onSamples(appendLiveHistoryRows)
 })
 
 const formatBytes = (bytes: number) => formatBytesWithConfig(bytes, appStore.byteDecimals)
@@ -40,6 +72,8 @@ const formatBytesPerSecond = (bytes: number) => formatBytesPerSecondWithConfig(b
 const formatUptime = (seconds: number) => formatUptimeWithFormat(seconds, appStore.uptimeFormat)
 
 const data = computed(() => nodesStore.nodes.find(node => node.uuid === route.params.id))
+const loadHistoryRecords = computed(() => data.value ? adaptHistoryRowsToLoadRecords(data.value.uuid, historyRows.value) : [])
+const pingHistory = computed(() => data.value ? adaptHistoryRowsToPingRecords(data.value.uuid, historyRows.value) : { count: 0, records: [], tasks: [] })
 const hasBackgroundBlur = computed(() => appStore.backgroundEnabled && appStore.cardBlurRadius > 0)
 const blurClass = computed(() => {
   if (!hasBackgroundBlur.value)
@@ -81,6 +115,90 @@ const storageInfo = computed<InfoItem[]>(() => [
   { label: '内存交换', value: formatBytes(data.value?.swap_total ?? 0), icon: 'swap_horiz' },
   { label: '硬盘', value: formatBytes(data.value?.disk_total ?? 0), icon: 'hard_drive' },
 ])
+
+function rowTimestamp(row: HistoryRowWire): number {
+  const value = Number.parseFloat(String(row.timestamp ?? 0))
+  if (!Number.isFinite(value) || value <= 0)
+    return 0
+  return value < 1e12 ? value * 1000 : value
+}
+
+function trimAndSortHistoryRows(rows: HistoryRowWire[]): HistoryRowWire[] {
+  const latestTs = rows.reduce((max, row) => Math.max(max, rowTimestamp(row)), Date.now())
+  const cutoff = latestTs - selectedHistoryHours.value * 3600_000
+  const byTimestamp = new Map<number, HistoryRowWire>()
+
+  for (const row of rows) {
+    const ts = rowTimestamp(row)
+    if (!ts || ts < cutoff)
+      continue
+    byTimestamp.set(ts, row)
+  }
+
+  return [...byTimestamp.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, row]) => row)
+}
+
+async function fetchHistoryData(): Promise<void> {
+  const uuid = typeof route.params.id === 'string' ? route.params.id : ''
+  if (!uuid) {
+    historyRows.value = []
+    historyLoading.value = false
+    historyError.value = null
+    return
+  }
+
+  const requestId = ++latestHistoryFetchId
+  historyLoading.value = true
+  historyError.value = null
+
+  try {
+    const rows = await api.getHistoryRecords(uuid, selectedHistoryHours.value)
+    if (requestId !== latestHistoryFetchId)
+      return
+    historyRows.value = trimAndSortHistoryRows(rows ?? [])
+  }
+  catch (error) {
+    if (requestId !== latestHistoryFetchId)
+      return
+    historyRows.value = []
+    historyError.value = error instanceof Error ? error.message : '获取数据失败'
+  }
+  finally {
+    if (requestId === latestHistoryFetchId)
+      historyLoading.value = false
+  }
+}
+
+function appendLiveHistoryRows(samples: Array<{ serverId: string, ts: number, data: Record<string, unknown> }>): void {
+  const uuid = typeof route.params.id === 'string' ? route.params.id : ''
+  if (!uuid)
+    return
+
+  const rows = samples
+    .filter(sample => sample.serverId === uuid)
+    .map((sample) => {
+      const ts = sample.ts || Number(sample.data.last_updated) || Date.now()
+      return {
+        ...sample.data,
+        timestamp: ts,
+      } as HistoryRowWire
+    })
+
+  if (rows.length === 0)
+    return
+
+  historyRows.value = trimAndSortHistoryRows([...historyRows.value, ...rows])
+}
+
+watch(
+  [() => route.params.id, selectedHistoryHours],
+  () => {
+    void fetchHistoryData()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -186,6 +304,20 @@ const storageInfo = computed<InfoItem[]>(() => [
       <div class="instance-detail__divider md-wavy-divider" />
 
       <section class="instance-charts">
+        <div class="md-control-row instance-charts__range-row">
+          <button
+            v-for="view in historyViews"
+            :key="view.label"
+            class="md-control-button"
+            :class="{ 'is-active': selectedHistoryView === view.label }"
+            type="button"
+            :aria-pressed="selectedHistoryView === view.label"
+            @click="selectedHistoryView = view.label"
+          >
+            {{ view.label }}
+          </button>
+        </div>
+
         <div class="md-segmented-control instance-charts__tabs" role="group" aria-label="图表类型">
           <button
             class="md-segmented-control__button instance-charts__tab"
@@ -205,8 +337,23 @@ const storageInfo = computed<InfoItem[]>(() => [
           </button>
         </div>
 
-        <LoadChart v-if="chartView === 'load'" :uuid="data.uuid" />
-        <PingChart v-else :uuid="data.uuid" />
+        <LoadChart
+          v-show="chartView === 'load'"
+          :uuid="data.uuid"
+          :records="loadHistoryRecords"
+          :hours="selectedHistoryHours"
+          :loading="historyLoading"
+          :error="historyError"
+        />
+        <PingChart
+          v-show="chartView === 'ping'"
+          :uuid="data.uuid"
+          :records="pingHistory.records"
+          :tasks="pingHistory.tasks"
+          :hours="selectedHistoryHours"
+          :loading="historyLoading"
+          :error="historyError"
+        />
       </section>
     </template>
   </div>

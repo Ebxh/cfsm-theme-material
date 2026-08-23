@@ -171,6 +171,7 @@ export interface LoadRecordsResponse {
 
 /** Ping 历史记录 */
 export interface PingRecord {
+  client?: string
   task_id: number
   time: string
   value: number
@@ -233,7 +234,7 @@ export class ApiError extends Error {
 
 const MB = 1024 * 1024
 
-interface SiteConfigWire {
+export interface SiteConfigWire {
   version?: string
   last_workers_version?: string | null
   last_agent_version?: string | null
@@ -254,7 +255,7 @@ interface ServersResponseWire {
   sysConfig?: Record<string, unknown>
 }
 
-interface HistoryRowWire extends Record<string, unknown> {
+export interface HistoryRowWire extends Record<string, unknown> {
   timestamp: number | string
 }
 
@@ -272,6 +273,74 @@ function timestamp(value: unknown, fallback = Date.now()): number {
   if (!number)
     return fallback
   return number < 1e12 ? number * 1000 : number
+}
+
+export const HISTORY_PING_TASKS = [
+  { id: 1, key: 'ct', name: '电信' },
+  { id: 2, key: 'cu', name: '联通' },
+  { id: 3, key: 'cm', name: '移动' },
+  { id: 4, key: 'bd', name: 'BGP' },
+] as const
+
+export function adaptHistoryRowsToLoadRecords(uuid: string, rows: HistoryRowWire[]): LoadRecord[] {
+  return (rows ?? []).map(row => ({
+    client: uuid,
+    time: new Date(timestamp(row.timestamp)).toISOString(),
+    cpu: finiteNumber(row.cpu),
+    gpu: finiteNumber(row.gpu),
+    ram: finiteNumber(row.ram_used) * MB,
+    ram_total: finiteNumber(row.ram_total) * MB,
+    swap: finiteNumber(row.swap_used) * MB,
+    swap_total: finiteNumber(row.swap_total) * MB,
+    load: finiteNumber(String(row.load_avg || '').split(/\s+/)[0]),
+    temp: 0,
+    disk: finiteNumber(row.disk_used) * MB,
+    disk_total: finiteNumber(row.disk_total) * MB,
+    net_in: finiteNumber(row.net_in_speed ?? row.net_in),
+    net_out: finiteNumber(row.net_out_speed ?? row.net_out),
+    net_total_up: finiteNumber(row.net_tx ?? row.net_total_up),
+    net_total_down: finiteNumber(row.net_rx ?? row.net_total_down),
+    process: finiteNumber(row.processes ?? row.process),
+    connections: finiteNumber(row.tcp_conn ?? row.connections),
+    connections_udp: finiteNumber(row.udp_conn ?? row.connections_udp),
+  })).sort((a, b) => timestamp(a.time) - timestamp(b.time))
+}
+
+export function adaptHistoryRowsToPingRecords(uuid: string, rows: HistoryRowWire[]): PingRecordsResponse {
+  const records: PingRecord[] = []
+  const taskLoss: Record<number, number[]> = {}
+
+  for (const row of rows ?? []) {
+    const time = new Date(timestamp(row.timestamp)).toISOString()
+    for (const task of HISTORY_PING_TASKS) {
+      const latencyValue = row[`ping_${task.key}`]
+      const lossRaw = row[`loss_${task.key}`]
+      if (latencyValue === undefined && lossRaw === undefined)
+        continue
+
+      const lossValue = lossRaw === undefined || lossRaw === null ? 0 : finiteNumber(lossRaw)
+      const latency = finiteNumber(latencyValue)
+      records.push({
+        client: uuid,
+        task_id: task.id,
+        time,
+        value: lossValue >= 100 || latencyValue === undefined || latency <= 0 ? -1 : latency,
+      })
+
+      const losses = taskLoss[task.id] ?? []
+      losses.push(lossValue)
+      taskLoss[task.id] = losses
+    }
+  }
+
+  const tasks: PingTask[] = HISTORY_PING_TASKS.map(task => ({
+    id: task.id,
+    interval: 60,
+    name: task.name,
+    loss: (taskLoss[task.id] ?? []).reduce((sum, value) => sum + value, 0) / Math.max(1, taskLoss[task.id]?.length ?? 0),
+  }))
+
+  return { count: records.length, records, tasks }
 }
 
 function normalizeBase(value: string): string {
@@ -364,6 +433,39 @@ async function cfsmFetch<T>(path: string, options: RequestInit = {}, timeoutMs =
   }
 }
 
+const CONFIG_CACHE_TTL_MS = 1200
+
+let configCache: { at: number, data: SiteConfigWire } | null = null
+let configInflight: Promise<SiteConfigWire> | null = null
+
+export async function fetchCfsmConfig(timeoutMs = 30000, force = false): Promise<SiteConfigWire> {
+  if (!force && configCache && Date.now() - configCache.at < CONFIG_CACHE_TTL_MS)
+    return configCache.data
+  if (configInflight)
+    return configInflight
+
+  configInflight = cfsmFetch<SiteConfigWire>('/api/config', {}, timeoutMs)
+    .then((data) => {
+      configCache = { at: Date.now(), data: data ?? {} }
+      return configCache.data
+    })
+    .finally(() => {
+      configInflight = null
+    })
+
+  return configInflight
+}
+
+function normalizeTags(value: unknown): string {
+  if (Array.isArray(value))
+    return value.map(item => String(item).trim()).filter(Boolean).join(';')
+  return String(value ?? '')
+    .split(/[,;]/)
+    .map(tag => tag.trim())
+    .filter(Boolean)
+    .join(';')
+}
+
 // ==================== API 客户端（接口與原版一致） ====================
 
 /** CFSM API 客户端 */
@@ -405,7 +507,7 @@ export class KomariApi {
 
   /** 獲取當前用戶信息（CFSM：/api/config.authorization） */
   async getMe(): Promise<MeInfo> {
-    const config = await cfsmFetch<SiteConfigWire>('/api/config')
+    const config = await fetchCfsmConfig(this.timeout)
     return {
       logged_in: Boolean(config?.authorization),
       username: '',
@@ -414,7 +516,7 @@ export class KomariApi {
 
   /** 獲取站點公開屬性（CFSM：/api/config） */
   async getPublicSettings(): Promise<PublicSettings> {
-    const config = await cfsmFetch<SiteConfigWire>('/api/config')
+    const config = await fetchCfsmConfig(this.timeout)
     const themeSettings: ThemeSettings = adaptThemeOptions(config?.theme_options)
     return {
       allow_cors: true,
@@ -442,7 +544,7 @@ export class KomariApi {
 
   /** 獲取服務端版本信息 */
   async getVersion(): Promise<VersionInfo> {
-    const config = await cfsmFetch<SiteConfigWire>('/api/config')
+    const config = await fetchCfsmConfig(this.timeout)
     return { version: config?.version || '', hash: '' }
   }
 
@@ -489,7 +591,7 @@ export class KomariApi {
         currency: String(server.currency || 'CNY'),
         expired_at: expiredAt,
         group: String(server.server_group || '默认分组'),
-        tags: String(server.tags || ''),
+        tags: normalizeTags(server.tags),
         public_remark: '',
         hidden: false,
         traffic_limit: finiteNumber(server.traffic_limit),
@@ -531,68 +633,21 @@ export class KomariApi {
   }
 
   /** 獲取指定節點負載歷史（CFSM：/api/history/all） */
+  async getHistoryRecords(uuid: string, hours: number): Promise<HistoryRowWire[]> {
+    return cfsmFetch<HistoryRowWire[]>(`/api/history/all?id=${encodeURIComponent(uuid)}&hours=${hours}`)
+  }
+
+  /** 獲取指定節點負載歷史（CFSM：/api/history/all） */
   async getLoadRecords(uuid: string, hours: number): Promise<LoadRecordsResponse> {
-    const rows = await cfsmFetch<HistoryRowWire[]>(`/api/history/all?id=${encodeURIComponent(uuid)}&hours=${hours}`)
-    const records: LoadRecord[] = (rows ?? []).map(row => ({
-      client: uuid,
-      time: new Date(timestamp(row.timestamp)).toISOString(),
-      cpu: finiteNumber(row.cpu),
-      gpu: finiteNumber(row.gpu),
-      ram: finiteNumber(row.ram_used) * MB,
-      ram_total: finiteNumber(row.ram_total) * MB,
-      swap: finiteNumber(row.swap_used) * MB,
-      swap_total: finiteNumber(row.swap_total) * MB,
-      load: finiteNumber(String(row.load_avg || '').split(/\s+/)[0]),
-      temp: 0,
-      disk: finiteNumber(row.disk_used) * MB,
-      disk_total: finiteNumber(row.disk_total) * MB,
-      net_in: finiteNumber(row.net_in_speed ?? row.net_in),
-      net_out: finiteNumber(row.net_out_speed ?? row.net_out),
-      net_total_up: finiteNumber(row.net_tx ?? row.net_total_up),
-      net_total_down: finiteNumber(row.net_rx ?? row.net_total_down),
-      process: finiteNumber(row.processes ?? row.process),
-      connections: finiteNumber(row.tcp_conn ?? row.connections),
-      connections_udp: finiteNumber(row.udp_conn ?? row.connections_udp),
-    }))
+    const rows = await this.getHistoryRecords(uuid, hours)
+    const records = adaptHistoryRowsToLoadRecords(uuid, rows)
     return { count: records.length, records }
   }
 
   /** 獲取指定節點 Ping 歷史（CFSM：/api/history/all 的 ping_* 字段） */
   async getPingRecords(uuid: string, hours: number): Promise<PingRecordsResponse> {
-    const rows = await cfsmFetch<HistoryRowWire[]>(`/api/history/all?id=${encodeURIComponent(uuid)}&hours=${hours}`)
-    const PING_TASKS = [
-      { id: 1, key: 'ping_ct', name: '电信' },
-      { id: 2, key: 'ping_cu', name: '联通' },
-      { id: 3, key: 'ping_cm', name: '移动' },
-      { id: 4, key: 'ping_bd', name: 'BGP' },
-    ] as const
-
-    const records: PingRecord[] = []
-    const taskLoss: Record<number, number[]> = {}
-
-    for (const row of rows ?? []) {
-      const time = new Date(timestamp(row.timestamp)).toISOString()
-      for (const task of PING_TASKS) {
-        const latencyValue = row[task.key]
-        const lossValue = finiteNumber(row[`loss_${task.key.replace('ping_', '')}`])
-        if (latencyValue === undefined)
-          continue
-        const latency = finiteNumber(latencyValue)
-        records.push({ task_id: task.id, time, value: lossValue >= 100 || latency <= 0 ? -1 : latency })
-        const losses = taskLoss[task.id] ?? []
-        losses.push(lossValue)
-        taskLoss[task.id] = losses
-      }
-    }
-
-    const tasks: PingTask[] = PING_TASKS.map(task => ({
-      id: task.id,
-      interval: 60,
-      name: task.name,
-      loss: (taskLoss[task.id] ?? []).reduce((sum, value) => sum + value, 0) / Math.max(1, taskLoss[task.id]?.length ?? 0),
-    }))
-
-    return { count: records.length, records, tasks }
+    const rows = await this.getHistoryRecords(uuid, hours)
+    return adaptHistoryRowsToPingRecords(uuid, rows)
   }
 
   /** 獲取管理後台數據庫占用（CFSM 不提供，返回空） */
@@ -791,6 +846,8 @@ export function getSharedApi(options?: ApiClientOptions): KomariApi {
 
 export function resetSharedApi(): void {
   sharedApiInstance = null
+  configCache = null
+  configInflight = null
 }
 
 // 為 rpc.ts 提供 PublicInfo 轉換（getPublicInfo 直接返回 PublicSettings 結構）

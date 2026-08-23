@@ -39,6 +39,7 @@ src-simple
 .eslintcache
 
 .env.development
+.cert/
 
 # Vite
 *.timestamp-*-*.mjs
