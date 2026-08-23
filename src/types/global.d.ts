@@ -40,6 +40,25 @@ export interface MaterialNotificationApi {
 
 export type MaterialDialogApi = MaterialNotificationApi
 
+/** Cloudflare Turnstile 渲染選項（challenges.cloudflare.com/turnstile/api.js） */
+export interface TurnstileRenderOptions {
+  sitekey: string
+  callback?: (token: string) => void
+  'error-callback'?: () => void
+  'expired-callback'?: () => void
+  theme?: 'light' | 'dark' | 'auto'
+  language?: string
+  size?: 'normal' | 'compact' | 'flexible'
+  appearance?: 'always' | 'execute' | 'interaction-only'
+}
+
+/** Cloudflare Turnstile 全局 API */
+export interface TurnstileApi {
+  render: (container: HTMLElement | string, options: TurnstileRenderOptions) => string
+  reset: (widgetId?: string) => void
+  remove: (widgetId?: string) => void
+}
+
 declare global {
   interface Window {
     $message: MaterialMessageApi
@@ -47,5 +66,6 @@ declare global {
     $notification: MaterialNotificationApi
     $loadingBar: MaterialLoadingBarApi
     $modal: MaterialModalApi
+    turnstile?: TurnstileApi
   }
 }

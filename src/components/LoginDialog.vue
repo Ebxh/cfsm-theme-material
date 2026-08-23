@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { ApiError, getSharedApi } from '@/utils/api'
 import { reconnectAfterLogin } from '@/utils/init'
+
+/** Cloudflare Turnstile 官方腳本（顯式渲染模式） */
+const TURNSTILE_SCRIPT_URL = 'https://challenges.cloudflare.com/turnstile/api.js?render=explicit'
 
 const props = defineProps<{
   forceLogin?: boolean
@@ -24,6 +27,17 @@ const loading = ref(false)
 const showOtpDialog = ref(false)
 const otpCode = ref<string[]>(['', '', '', '', '', ''])
 const otpLoading = ref(false)
+
+// ---- Cloudflare Turnstile 狀態 ----
+const turnstileToken = ref<string | null>(null)
+const turnstileWidgetId = ref<string | null>(null)
+const turnstileError = ref<string | null>(null)
+
+/** 是否需要在登入前完成 Turnstile 人機驗證（CFSM turnstile_login_enabled） */
+const showTurnstile = computed(() => (
+  appStore.publicSettings?.turnstile_login_enabled === true
+  && !!appStore.publicSettings?.turnstile_site_key
+))
 
 function updateUsername(event: Event) {
   form.value.username = (event.target as HTMLInputElement).value
@@ -62,14 +76,102 @@ async function finishLogin() {
   }
 }
 
+/** 動態載入 Turnstile 腳本（冪等：已載入直接返回） */
+function loadTurnstileScript(): Promise<void> {
+  return new Promise((resolve) => {
+    if (window.turnstile) {
+      resolve()
+      return
+    }
+    if (document.querySelector(`script[src="${TURNSTILE_SCRIPT_URL}"]`)) {
+      const check = () => (window.turnstile ? resolve() : setTimeout(check, 100))
+      check()
+      return
+    }
+    const script = document.createElement('script')
+    script.src = TURNSTILE_SCRIPT_URL
+    script.async = true
+    script.onload = () => resolve()
+    document.head.appendChild(script)
+  })
+}
+
+/** 渲染 Turnstile widget；容器存在且 sitekey 有效時才執行 */
+async function mountTurnstile(): Promise<void> {
+  if (!showTurnstile.value)
+    return
+
+  const siteKey = appStore.publicSettings?.turnstile_site_key
+  const container = document.getElementById('turnstile-widget')
+  if (!siteKey || !container)
+    return
+
+  await loadTurnstileScript()
+  if (!window.turnstile) {
+    turnstileError.value = 'Turnstile 加载失败，请刷新后重试'
+    return
+  }
+
+  turnstileWidgetId.value = window.turnstile.render(container, {
+    sitekey: siteKey,
+    theme: appStore.isDark ? 'dark' : 'light',
+    callback: (token) => {
+      turnstileToken.value = token
+      turnstileError.value = null
+    },
+    'expired-callback': () => {
+      turnstileToken.value = null
+    },
+    'error-callback': () => {
+      turnstileToken.value = null
+      turnstileError.value = '人机验证出现错误，请重试'
+    },
+  })
+}
+
+function resetTurnstile(): void {
+  turnstileToken.value = null
+  if (window.turnstile && turnstileWidgetId.value)
+    window.turnstile.reset(turnstileWidgetId.value)
+}
+
 async function handleLogin() {
   if (!validateForm())
     return
 
-  // CFSM 登錄在管理後台 /admin，第三方主題不實現登錄頁
-  window.$message?.info('请到管理后台登录')
-  window.$modal?.destroyAll()
-  location.href = `${window.location.origin}/admin`
+  if (showTurnstile.value && !turnstileToken.value) {
+    window.$message?.warning('请先完成人机验证')
+    return
+  }
+
+  loading.value = true
+  try {
+    // CFSM 登入：POST /admin/api（action: login），Turnstile 開啟時帶 X-Turnstile-Token
+    await api.adminLogin(
+      form.value.username.trim(),
+      form.value.password,
+      turnstileToken.value ?? undefined,
+    )
+    await finishLogin()
+  }
+  catch (error) {
+    if (error instanceof ApiError && error.code === 403) {
+      window.$message?.error('人机验证失败，请重新验证')
+      resetTurnstile()
+    }
+    else if (error instanceof ApiError && error.code === 401) {
+      window.$message?.error('用户名或密码错误')
+    }
+    else if (error instanceof ApiError && error.code === 400) {
+      window.$message?.error('请输入用户名和密码')
+    }
+    else {
+      window.$message?.error(error instanceof Error ? error.message : '登录失败，请稍后重试')
+    }
+  }
+  finally {
+    loading.value = false
+  }
 }
 
 async function handleOtpSubmit() {
@@ -80,6 +182,20 @@ async function handleOtpSubmit() {
 function handleOAuth2Login() {
   location.href = `${window.location.origin}/admin`
 }
+
+// publicSettings 可能晚於組件掛載載入（並行 bootstrap），載入後再渲染 Turnstile
+watch(() => appStore.publicSettings, () => {
+  void mountTurnstile()
+})
+
+onMounted(() => {
+  void mountTurnstile()
+})
+
+onBeforeUnmount(() => {
+  if (window.turnstile && turnstileWidgetId.value)
+    window.turnstile.remove(turnstileWidgetId.value)
+})
 </script>
 
 <template>
@@ -112,6 +228,11 @@ function handleOAuth2Login() {
           @keydown.enter="handleLogin"
         />
       </label>
+
+      <div v-if="showTurnstile" class="login-dialog__turnstile">
+        <div id="turnstile-widget" class="login-dialog__turnstile-widget" />
+        <p v-if="turnstileError" class="login-dialog__turnstile-error">{{ turnstileError }}</p>
+      </div>
 
       <md-filled-button class="login-dialog__primary" :disabled="loading" @click="handleLogin">
         <span class="material-symbols-rounded login-dialog__button-icon" aria-hidden="true">login</span>
@@ -185,6 +306,28 @@ function handleOAuth2Login() {
   height: 1px;
   margin: 4px 0;
   background: var(--md-sys-color-outline-variant);
+}
+
+.login-dialog__turnstile {
+  display: flex;
+  min-height: 78px;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.login-dialog__turnstile-widget {
+  min-height: 65px;
+}
+
+.login-dialog__turnstile-error {
+  margin: 0;
+  color: var(--md-sys-color-error);
+  font-family: var(--md-sys-typescale-body-small-font);
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+  letter-spacing: var(--md-sys-typescale-body-small-tracking);
+  text-align: center;
 }
 
 .login-dialog__otp {

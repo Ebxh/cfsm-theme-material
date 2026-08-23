@@ -54,6 +54,10 @@ export interface PublicSettings {
   theme_settings?: Record<string, unknown> | null
   /** 数据更新间隔（秒），主题配置项 */
   dataUpdateInterval?: number
+  /** 登入是否啟用 Cloudflare Turnstile 人機驗證 */
+  turnstile_login_enabled?: boolean
+  /** Turnstile site key（開啟時前端渲染 widget 用） */
+  turnstile_site_key?: string
 }
 
 /** 版本信息 */
@@ -241,6 +245,7 @@ export interface SiteConfigWire {
   is_public?: boolean | string
   authorization?: boolean
   turnstile_enabled?: boolean | string
+  turnstile_login_enabled?: boolean | string
   turnstile_site_key?: string
   site_title?: string
   theme_options?: unknown
@@ -390,7 +395,10 @@ async function cfsmFetch<T>(path: string, options: RequestInit = {}, timeoutMs =
   try {
     const response = await fetch(`${baseUrl}${path}`, {
       ...options,
-      headers: authHeaders(baseUrl),
+      headers: {
+        ...authHeaders(baseUrl),
+        ...(options.headers as Record<string, string> | undefined),
+      },
       signal: controller.signal,
     })
     clearTimeout(timeoutId)
@@ -534,6 +542,8 @@ export class KomariApi {
       theme: 'material',
       theme_settings: themeSettings as unknown as Record<string, unknown>,
       dataUpdateInterval: themeSettings.dataUpdateInterval,
+      turnstile_login_enabled: enabled(config?.turnstile_login_enabled),
+      turnstile_site_key: String(config?.turnstile_site_key || ''),
     }
   }
 
@@ -552,6 +562,36 @@ export class KomariApi {
   async login(_username: string, _password: string, _twoFactorCode?: string): Promise<{ 'set-cookie': { session_token: string } }> {
     window.location.href = `${window.location.origin}/admin`
     throw new ApiError('請到管理後台登錄', 'error')
+  }
+
+  /**
+   * 登入（CFSM：POST /admin/api，action: login）
+   *
+   * CFSM 的登入與 Turnstile 流程（API.md）：
+   * - 當 turnstile_enabled 或 turnstile_login_enabled 開啟時，請求必須帶
+   *   X-Turnstile-Token 頭（一次性驗證 token），否則返回 403 verificationFailed。
+   * - 成功響應 { success: true, token: "<JWT>", message: "loginSuccessful" }，
+   *   token 即 Bearer JWT（7 天有效），存入 localStorage 供後續請求使用。
+   * - 失敗：400 missingCredentials / 401 invalidCredentials / 403 verificationFailed。
+   */
+  async adminLogin(username: string, password: string, turnstileToken?: string): Promise<{ token: string }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (turnstileToken)
+      headers['X-Turnstile-Token'] = turnstileToken
+
+    const response = await cfsmFetch<{ success?: boolean, token?: string, error?: string, code?: number }>('/admin/api', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ action: 'login', username, password }),
+    }, this.timeout)
+
+    if (!response?.token) {
+      throw new ApiError(response?.error || '登入失敗', 'error', response?.code)
+    }
+
+    localStorage.setItem('jwt_token', response.token)
+    localStorage.removeItem('turnstile_verified')
+    return { token: response.token }
   }
 
   /** 登出（跳轉 /admin） */
