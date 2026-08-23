@@ -68,8 +68,8 @@ const presetViews = [
 // 可用视图列表（CFSM 主题：始终渲染 9 个固定窗口）
 const availableViews = computed(() => presetViews)
 
-// 当前选中的视图
-const selectedView = ref<string>('24H')
+// 当前选中的视图（默認 10M，與 CFSM 原始皮膚一致）
+const selectedView = ref<string>('10M')
 const selectedHours = computed(() => {
   const view = availableViews.value.find(v => v.label === selectedView.value)
   return view?.hours ?? 1

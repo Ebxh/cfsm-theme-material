@@ -51,6 +51,7 @@ export interface Client {
   traffic_limit_type: string
   created_at: string
   updated_at: string
+  boot_time: string
 }
 
 /** 公开站点信息 */
@@ -514,6 +515,7 @@ function adaptClient(server: CfServerWire): Client {
     traffic_limit_type: trafficLimitType(server.traffic_calc_type),
     created_at: '',
     updated_at: bootTime ? new Date(bootTime).toISOString() : '',
+    boot_time: bootTime ? new Date(bootTime).toISOString() : '',
   }
 }
 
@@ -551,8 +553,10 @@ function adaptStatus(server: CfServerWire): NodeStatus {
     disk_total: finiteNumber(server.disk_total) * MB,
     net_in: numberField(wire, 'net_in_speed', 'net_in'),
     net_out: numberField(wire, 'net_out_speed', 'net_out'),
-    net_total_up: numberField(wire, 'net_tx', 'net_total_up', 'net_tx_monthly'),
-    net_total_down: numberField(wire, 'net_rx', 'net_total_down', 'net_rx_monthly'),
+    // CFSM 同時提供總流量（net_tx/net_rx）與月流量（net_tx_monthly/net_rx_monthly）。
+    // 本主題將「總流量」欄位語義統一為月流量，以配合流量限額進度條與月流量卡片顯示。
+    net_total_up: numberField(wire, 'net_tx_monthly', 'net_tx', 'net_total_up'),
+    net_total_down: numberField(wire, 'net_rx_monthly', 'net_rx', 'net_total_down'),
     process: finiteNumber(server.processes),
     connections: finiteNumber(server.tcp_conn),
     connections_udp: finiteNumber(server.udp_conn),
@@ -580,8 +584,9 @@ function adaptStatusRecord(uuid: string, row: Record<string, unknown>): StatusRe
     disk_total: finiteNumber(row.disk_total) * MB,
     net_in: numberField(row, 'net_in_speed', 'net_in'),
     net_out: numberField(row, 'net_out_speed', 'net_out'),
-    net_total_up: numberField(row, 'net_tx', 'net_total_up', 'net_tx_monthly'),
-    net_total_down: numberField(row, 'net_rx', 'net_total_down', 'net_rx_monthly'),
+    // 歷史記錄同樣優先取月流量統計
+    net_total_up: numberField(row, 'net_tx_monthly', 'net_tx', 'net_total_up'),
+    net_total_down: numberField(row, 'net_rx_monthly', 'net_rx', 'net_total_down'),
     process: finiteNumber(row.processes),
     connections: finiteNumber(row.tcp_conn),
     connections_udp: finiteNumber(row.udp_conn),

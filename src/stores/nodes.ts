@@ -39,6 +39,7 @@ export interface NodeData {
   traffic_limit_type: TrafficLimitType
   created_at: string
   updated_at: string
+  boot_time: string
   // Status 信息
   online: boolean
   time: string
@@ -191,6 +192,7 @@ const useNodesStore = defineStore('nodes', () => {
       traffic_limit_type: client.traffic_limit_type as TrafficLimitType,
       created_at: client.created_at,
       updated_at: client.updated_at,
+      boot_time: client.boot_time,
       // Status 默认值
       online: false,
       time: '',

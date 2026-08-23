@@ -50,15 +50,15 @@ interface InfoItem {
 const hardwareInfo = computed<InfoItem[]>(() => [
   { label: 'CPU', value: data.value ? `${data.value.cpu_name} (x${data.value.cpu_cores})` : '-', icon: 'memory' },
   { label: '架构', value: data.value?.arch ?? '-', icon: 'developer_board' },
-  { label: '虚拟化', value: data.value?.virtualization ?? '-', icon: 'dns' },
+  { label: '内核', value: data.value?.kernel_version ?? '-', icon: 'code' },
   { label: 'GPU', value: data.value?.gpu_name || '-', icon: 'videocam' },
 ])
 
 const systemInfo = computed<InfoItem[]>(() => [
   { label: '操作系统', value: data.value?.os ?? '-', icon: 'computer' },
-  { label: '内核版本', value: data.value?.kernel_version ?? '-', icon: 'code' },
-  { label: '运行时间', value: formatUptime(data.value?.uptime ?? 0), icon: 'timer' },
-  { label: '最后上报', value: formatDateTime(data.value?.time), icon: 'schedule' },
+  { label: '启动时间', value: formatDateTime(data.value?.boot_time), icon: 'timer' },
+  { label: '运行时间', value: formatUptime(data.value?.uptime ?? 0), icon: 'schedule' },
+  { label: '最后上报', value: formatDateTime(data.value?.time), icon: 'update' },
 ])
 
 const storageInfo = computed<InfoItem[]>(() => [
@@ -156,7 +156,7 @@ const storageInfo = computed<InfoItem[]>(() => [
           <div class="instance-info-card__grid">
             <div class="instance-info-item">
               <span class="material-symbols-rounded">swap_vert</span>
-              <span class="md-label">总流量</span>
+              <span class="md-label">月流量</span>
               <strong class="md-number">↑ {{ formatBytes(data?.net_total_up ?? 0) }} ｜ ↓ {{ formatBytes(data?.net_total_down ?? 0) }}</strong>
             </div>
             <div class="instance-info-item">

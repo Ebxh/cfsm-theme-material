@@ -315,8 +315,8 @@ onUnmounted(() => pauseRefreshTimer())
           </div>
         </div>
 
-        <div class="general-card__traffic-row" role="group" aria-label="总流量">
-          <span class="general-card__traffic-row-label">总流量</span>
+        <div class="general-card__traffic-row" role="group" aria-label="月流量">
+          <span class="general-card__traffic-row-label">月流量</span>
           <div class="general-card__traffic-row-values md-number">
             <div class="general-card__traffic-cell general-card__traffic-cell--down">
               <span class="material-symbols-rounded" aria-hidden="true">download</span>

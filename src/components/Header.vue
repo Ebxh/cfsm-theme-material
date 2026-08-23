@@ -11,7 +11,7 @@ const appStore = useAppStore()
 const isScrolled = inject<ReturnType<typeof ref<boolean>>>('isScrolled', ref(false))
 const siteFavicon = ref('/favicon.ico')
 
-const brandTitle = computed(() => appStore.publicSettings?.sitename || 'Komari Material')
+const brandTitle = computed(() => appStore.publicSettings?.sitename || 'CFSM Material')
 const hasBackgroundBlur = computed(() => appStore.backgroundEnabled && appStore.cardBlurRadius > 0)
 const themeAction = computed(() => {
   if (appStore.themeMode === 'light') {

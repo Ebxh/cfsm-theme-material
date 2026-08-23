@@ -58,23 +58,12 @@ const safePoliceUrl = computed(() => sanitizeNavigationUrl(appStore.policeUrl))
           <span class="material-symbols-rounded">monitor_heart</span>
         </span>
         <span class="material-footer__brand-copy">
-          <strong>Komari Material</strong>
-          <span>Material Design 3 theme for Komari Monitor</span>
+          <strong>CFSM Material</strong>
+          <span>Material Design 3 theme for CF-Server-Monitor</span>
         </span>
       </div>
 
       <div class="material-footer__supporting">
-        <nav class="material-footer__links" aria-label="项目链接">
-          <a href="https://github.com/komari-monitor/komari" target="_blank" rel="noopener noreferrer">
-            <span>Komari Monitor</span>
-            <span class="material-symbols-rounded" aria-hidden="true">open_in_new</span>
-          </a>
-          <a href="https://github.com/Liebesfreud/Komari-Material" target="_blank" rel="noopener noreferrer">
-            <span>GitHub</span>
-            <span class="material-symbols-rounded" aria-hidden="true">open_in_new</span>
-          </a>
-        </nav>
-
         <div v-if="showFiling" class="material-footer__filing">
           <a v-if="showIcp && safeIcpUrl" :href="safeIcpUrl" target="_blank" rel="noopener noreferrer">
             {{ appStore.icpNumber }}
@@ -89,7 +78,7 @@ const safePoliceUrl = computed(() => sanitizeNavigationUrl(appStore.policeUrl))
 
         <div
           class="material-footer__version"
-          :title="`Theme v${buildVersion} (${buildGitHash})${formattedServerVersion ? ` · Komari v${formattedServerVersion}` : ''}`"
+          :title="`Theme v${buildVersion} (${buildGitHash})${formattedServerVersion ? ` · CF-Server-Monitor v${formattedServerVersion}` : ''}`"
         >
           <span>Theme v{{ buildVersion }}</span>
           <template v-if="formattedServerVersion">
