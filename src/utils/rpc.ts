@@ -756,6 +756,8 @@ export class RpcClient {
   private registeredIds: string[] = []
   /** 最近一次已向服務端發送的訂閱 ID（去重用） */
   private subscribedIdsKey = ''
+  /** 當前聚焦的單一節點（詳情頁）；非 null 時 WS URL 用 subscribe=<id> */
+  private wsFocusId: string | null = null
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   /** batchUpdate 樣本回調（由上層接入 nodesStore） */
   private sampleListeners = new Set<(samples: WsSample[]) => void>()
@@ -772,6 +774,22 @@ export class RpcClient {
       this.sendSubscribe()
   }
 
+  /**
+   * 設置當前聚焦的單一節點（詳情頁）：
+   * - 詳情頁：WS URL 改為 /api/ws?subscribe=<id>，只接收該節點的實時推送；
+   * - 離開詳情頁（null）：回到 subscribe=all。
+   * URL 參數變化需要重連 WS，故此處直接關閉並重建連接。
+   */
+  setWsFocus(uuid: string | null): void {
+    if (this.wsFocusId === uuid)
+      return
+    this.wsFocusId = uuid
+    if (this.ws) {
+      this.close()
+      void this.ensureWebSocketReady()
+    }
+  }
+
   /** 訂閱 batchUpdate 實時樣本，返回取消訂閱函數 */
   onSamples(listener: (samples: WsSample[]) => void): () => void {
     this.sampleListeners.add(listener)
@@ -782,14 +800,16 @@ export class RpcClient {
   private sendSubscribe(): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN)
       return
-    if (this.registeredIds.length === 0)
+    // 詳情頁聚焦單一節點時只訂閱該節點，配合 URL subscribe=<id>
+    const ids = this.wsFocusId ? [this.wsFocusId] : this.registeredIds
+    if (ids.length === 0)
       return
-    const key = this.registeredIds.join(',')
+    const key = ids.join(',')
     if (key === this.subscribedIdsKey)
       return
     this.subscribedIdsKey = key
     try {
-      this.ws.send(JSON.stringify({ type: 'subscribe', scope: 'all', ids: this.registeredIds }))
+      this.ws.send(JSON.stringify({ type: 'subscribe', scope: 'all', ids }))
     }
     catch { /* 忽略發送失敗，下次 setRegisteredIds 會重試 */ }
   }
@@ -939,7 +959,7 @@ export class RpcClient {
     const url = new URL(base)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
     url.pathname = '/api/ws'
-    url.searchParams.set('subscribe', 'all')
+    url.searchParams.set('subscribe', this.wsFocusId ?? 'all')
     if (url.host !== window.location.host) {
       const token = getLocalStorageValue('jwt_token')
       if (token)

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useNodesStore } from '@/stores/nodes'
+import { getSharedRpc } from '@/utils/rpc'
 import { formatBytesPerSecondWithConfig, formatBytesWithConfig, formatDateTime, formatUptimeWithFormat } from '@/utils/helper'
 import { getOSImage, getOSName } from '@/utils/osImageHelper'
 import { getRegionCode, getRegionDisplayName } from '@/utils/regionHelper'
@@ -15,6 +16,20 @@ const router = useRouter()
 const appStore = useAppStore()
 const nodesStore = useNodesStore()
 const chartView = ref<'load' | 'ping'>('load')
+
+// 詳情頁聚焦單一節點：WS 改為 subscribe=<id>，只接收該節點的實時推送
+watch(
+  () => route.params.id,
+  (id) => {
+    const uuid = typeof id === 'string' && id ? id : null
+    getSharedRpc().getClient().setWsFocus(uuid)
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => {
+  getSharedRpc().getClient().setWsFocus(null)
+})
 
 onMounted(() => {
   window.scrollTo({ top: 0, behavior: 'instant' })
