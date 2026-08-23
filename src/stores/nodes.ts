@@ -1,6 +1,6 @@
 import type { Client, NodeStatus } from '@/utils/rpc'
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 
 /** 流量限制类型 */
 export type TrafficLimitType = 'up' | 'down' | 'min' | 'max' | 'sum'
@@ -115,9 +115,9 @@ const useNodesStore = defineStore('nodes', () => {
    */
   const displayRates = reactive<Record<string, { netIn: number, netOut: number }>>({})
 
-  /** 首次取得該節點速率時直接賦值（無歷史可平滑） */
-  function setDisplayRate(uuid: string, netIn: number, netOut: number): void {
-    displayRates[uuid] = { netIn, netOut }
+  /** 離線節點：顯示速率清零 */
+  function clearDisplayRate(uuid: string): void {
+    displayRates[uuid] = { netIn: 0, netOut: 0 }
   }
 
   /** 對節點速率做 EMA 平滑並寫入顯示緩衝 */
@@ -131,6 +131,23 @@ const useNodesStore = defineStore('nodes', () => {
     displayRates[uuid] = {
       netIn: alpha * netIn + (1 - alpha) * prev.netIn,
       netOut: alpha * netOut + (1 - alpha) * prev.netOut,
+    }
+  }
+
+  /** 依當前節點列表同步各節點的顯示速率（離線清零、在線 EMA 平滑） */
+  function updateDisplayRates(): void {
+    const seen = new Set<string>()
+    for (const node of nodes.value) {
+      seen.add(node.uuid)
+      if (!node.online) {
+        clearDisplayRate(node.uuid)
+        continue
+      }
+      smoothDisplayRate(node.uuid, node.net_in ?? 0, node.net_out ?? 0)
+    }
+    for (const key of Object.keys(displayRates)) {
+      if (!seen.has(key))
+        delete displayRates[key]
     }
   }
 
@@ -190,6 +207,9 @@ const useNodesStore = defineStore('nodes', () => {
         down,
       },
     ]
+
+    // 同步各節點顯示速率（EMA 平滑），令卡片/總覽的速率數字不再高頻跳動
+    updateDisplayRates()
   }
 
   // ===== 方法 =====
@@ -357,7 +377,7 @@ const useNodesStore = defineStore('nodes', () => {
     sortNodesByWeight()
     // 首幀直接賦值顯示速率（無歷史可平滑）
     for (const node of nodes.value)
-      setDisplayRate(node.uuid, node.net_in, node.net_out)
+      smoothDisplayRate(node.uuid, node.net_in, node.net_out)
     recordNetworkRateSample()
   }
 
