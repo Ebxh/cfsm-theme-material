@@ -591,6 +591,9 @@ export class KomariApi {
 
     localStorage.setItem('jwt_token', response.token)
     localStorage.removeItem('turnstile_verified')
+    // 清除 /api/config 緩存：登入前緩存的是 authorization=false 的舊配置，
+    // 不清除的話登入後 getMe() 可能命中緩存，誤判「仍為未登入」。
+    configCache = null
     return { token: response.token }
   }
 

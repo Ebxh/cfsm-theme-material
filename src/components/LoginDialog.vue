@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { ApiError, getSharedApi } from '@/utils/api'
 import { reconnectAfterLogin } from '@/utils/init'
@@ -102,8 +102,15 @@ async function mountTurnstile(): Promise<void> {
     return
 
   const siteKey = appStore.publicSettings?.turnstile_site_key
+  if (!siteKey)
+    return
+
+  // showTurnstile 可能因 publicSettings 晚載入而剛剛變 true，
+  // 等待 v-if 容器完成渲染後再查詢 DOM，避免 getElementById 返回 null 導致 widget 永不掛載。
+  await nextTick()
+
   const container = document.getElementById('turnstile-widget')
-  if (!siteKey || !container)
+  if (!container)
     return
 
   await loadTurnstileScript()
