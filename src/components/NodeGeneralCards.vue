@@ -52,9 +52,6 @@ const onlineRegionCount = computed(() => {
 const onlineNodeCount = computed(() => nodesStore.nodes.filter(node => node.online).length)
 const formattedTrafficUp = computed(() => formatBytesSplit(totalTraffic.value.up, appStore.byteDecimals))
 const formattedTrafficDown = computed(() => formatBytesSplit(totalTraffic.value.down, appStore.byteDecimals))
-const trafficLast24Hours = computed(() => dashboardStore.trafficLast24Hours)
-const formattedTraffic24Up = computed(() => formatBytesSplit(trafficLast24Hours.value.up, appStore.byteDecimals))
-const formattedTraffic24Down = computed(() => formatBytesSplit(trafficLast24Hours.value.down, appStore.byteDecimals))
 const formattedSpeedUp = computed(() => formatBytesPerSecondSplit(totalSpeed.value.up, appStore.byteDecimals))
 const formattedSpeedDown = computed(() => formatBytesPerSecondSplit(totalSpeed.value.down, appStore.byteDecimals))
 const networkRateHistory = computed(() => nodesStore.networkRateHistory)
@@ -285,22 +282,6 @@ onMounted(() => {
       ]"
     >
       <div class="general-card__traffic-content" aria-label="流量总览">
-        <div class="general-card__traffic-row" role="group" aria-label="今日流量">
-          <span class="general-card__traffic-row-label">今日流量</span>
-          <div class="general-card__traffic-row-values md-number">
-            <div class="general-card__traffic-cell general-card__traffic-cell--down">
-              <span class="material-symbols-rounded" aria-hidden="true">download</span>
-              <strong>{{ formattedTraffic24Down.value }}</strong>
-              <small>{{ formattedTraffic24Down.unit }}</small>
-            </div>
-            <div class="general-card__traffic-cell general-card__traffic-cell--up">
-              <span class="material-symbols-rounded" aria-hidden="true">upload</span>
-              <strong>{{ formattedTraffic24Up.value }}</strong>
-              <small>{{ formattedTraffic24Up.unit }}</small>
-            </div>
-          </div>
-        </div>
-
         <div class="general-card__traffic-row" role="group" aria-label="月流量">
           <span class="general-card__traffic-row-label">月流量</span>
           <div class="general-card__traffic-row-values md-number">

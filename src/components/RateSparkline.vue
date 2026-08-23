@@ -27,6 +27,9 @@ const SPARKLINE_PADDING_X = 2
 const SPARKLINE_PADDING_TOP = 3
 const SPARKLINE_BASELINE_Y = 41
 
+/** 速率 Y 軸檔位（B/s）：topValue 就近取整到檔位，避免整個曲線隨單個尖峰實時縮放抖動 */
+const RATE_BUCKETS = [1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10] as const
+
 const appStore = useAppStore()
 const now = useNow({ interval: 1000 })
 
@@ -75,7 +78,12 @@ function buildSparkline(direction: RateDirection, topValue: number): SparklineDa
   return { areaPath, linePath }
 }
 
-const topValue = computed(() => Math.max(1, ...getRateValues()) * 1.18)
+const topValue = computed(() => {
+  const max = Math.max(1, ...getRateValues())
+  // 取第一個不小於 max 的檔位；超過最大檔位時按最大檔位封頂
+  const bucket = RATE_BUCKETS.find(value => value >= max) ?? RATE_BUCKETS[RATE_BUCKETS.length - 1]!
+  return bucket
+})
 const uploadSparkline = computed(() => buildSparkline('up', topValue.value))
 const downloadSparkline = computed(() => buildSparkline('down', topValue.value))
 const sparklineBaselinePath = `M ${SPARKLINE_PADDING_X} ${SPARKLINE_BASELINE_Y} H ${SPARKLINE_WIDTH - SPARKLINE_PADDING_X}`

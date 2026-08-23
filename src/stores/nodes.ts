@@ -68,6 +68,9 @@ export type WsConnectionState = 'disconnected' | 'connecting' | 'connected' | 'r
 /** 首页速率曲线的时间窗口（30 秒） */
 export const NETWORK_RATE_HISTORY_WINDOW_MS = 30 * 1000
 
+/** 速率 EMA 平滑系数：越小越平滑，越大越跟手（0.3 ≈ 兼顾响应与平滑） */
+const RATE_SMOOTHING_ALPHA = 0.3
+
 export interface NetworkRateHistoryPoint {
   time: string
   up: number
@@ -103,6 +106,8 @@ const useNodesStore = defineStore('nodes', () => {
   const networkRateHistory = ref<NetworkRateHistoryPoint[]>([])
   const wsConnectionState = ref<WsConnectionState>('disconnected')
   const wsReconnectAttempts = ref<number>(0)
+  /** 速率 EMA 平滑緩衝（未初始化時為 null） */
+  let smoothedRate: { up: number, down: number } | null = null
 
   // ===== 计算属性 =====
   /** 在线节点数量 */
@@ -132,16 +137,24 @@ const useNodesStore = defineStore('nodes', () => {
 
   function recordNetworkRateSample(): void {
     const timestamp = Date.now()
-    const up = nodes.value.reduce((sum, node) => {
+    const rawUp = nodes.value.reduce((sum, node) => {
       if (!node.online || !Number.isFinite(node.net_out))
         return sum
       return sum + Math.max(0, node.net_out)
     }, 0)
-    const down = nodes.value.reduce((sum, node) => {
+    const rawDown = nodes.value.reduce((sum, node) => {
       if (!node.online || !Number.isFinite(node.net_in))
         return sum
       return sum + Math.max(0, node.net_in)
     }, 0)
+
+    // CFSM 實時推送的瞬時速率抖動明顯，對樣本做 EMA 平滑，
+    // 令首頁速率曲線不再隨單個採樣點劇烈跳動。
+    const alpha = RATE_SMOOTHING_ALPHA
+    const up = smoothedRate ? alpha * rawUp + (1 - alpha) * smoothedRate.up : rawUp
+    const down = smoothedRate ? alpha * rawDown + (1 - alpha) * smoothedRate.down : rawDown
+    smoothedRate = { up, down }
+
     const cutoff = timestamp - NETWORK_RATE_HISTORY_WINDOW_MS
 
     networkRateHistory.value = [
@@ -276,6 +289,7 @@ const useNodesStore = defineStore('nodes', () => {
    */
   function initNodes(clients: Record<string, Client>, statuses: Record<string, NodeStatus>): void {
     networkRateHistory.value = []
+    smoothedRate = null
     const uuids = Object.keys(clients)
     const existingUuids = new Set(nodes.value.map(n => n.uuid))
 
@@ -464,6 +478,7 @@ const useNodesStore = defineStore('nodes', () => {
   function clearNodes(): void {
     nodes.value = []
     networkRateHistory.value = []
+    smoothedRate = null
   }
 
   return {
