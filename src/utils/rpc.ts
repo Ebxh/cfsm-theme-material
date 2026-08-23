@@ -1258,18 +1258,40 @@ export class KomariRpc {
           }
         }
         else {
-          // CFSM 2.8+ 在 show_three_net_details=false 時不再內嵌 ping/loss 歷史陣列，
-          // 但仍返回當前 ping_*/loss_* 單點值；退而用之，令卡片摘要可顯示即時延遲/丟包。
-          const ts = timestamp(server.last_updated || server.timestamp)
-          const serverRecord = server as Record<string, unknown>
-          for (const task of activeTasks) {
-            pushPoint(
-              server.id,
-              task.id,
-              ts,
-              serverRecord[`ping_${task.key}`],
-              serverRecord[`loss_${task.key}`],
+          // CFSM 2.8+ 在 show_three_net_details=false 時不再內嵌 ping/loss 歷史陣列；
+          // 此時若無歷史，sparkline 只會得一個點、無法顯示趨勢。自動回源
+          // /api/history/all 取得 ~30 個採樣點供曲線使用，失敗才退單點。
+          let usedHistory = false
+          try {
+            const rows = await cfsmRequest<Array<Record<string, unknown>>>(
+              `/api/history/all?id=${encodeURIComponent(server.id)}&hours=${requestedHours}`,
             )
+            if (rows && rows.length > 0) {
+              for (const row of rows) {
+                const ts = timestamp(row.timestamp)
+                for (const task of activeTasks)
+                  pushPoint(server.id, task.id, ts, row[`ping_${task.key}`], row[`loss_${task.key}`])
+              }
+              usedHistory = true
+            }
+          }
+          catch {
+            // 忽略：退下一步用單點兜底
+          }
+
+          if (!usedHistory) {
+            // 退路：僅用當前 ping_*/loss_* 單點值，令卡片摘要至少可顯示即時數值
+            const ts = timestamp(server.last_updated || server.timestamp)
+            const serverRecord = server as Record<string, unknown>
+            for (const task of activeTasks) {
+              pushPoint(
+                server.id,
+                task.id,
+                ts,
+                serverRecord[`ping_${task.key}`],
+                serverRecord[`loss_${task.key}`],
+              )
+            }
           }
         }
       }
