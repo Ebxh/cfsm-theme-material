@@ -1,65 +1,62 @@
-# CF-Server-Monitor Theme Material
+# CFSM Material
 
-為 [CF-Server-Monitor](https://github.com/huilang-me/CF-Server-Monitor) 打造的 **Material Design 3 / Material You** 主題。
+<p align="center">
+  <strong>為 CF-Server-Monitor 打造的 Material Design 3 / Material You 主題</strong><br>
+  高信息密度、動態配色、響應式佈局與可管理配置
+</p>
 
-本主題是 [Liebesfreud/Komari-Material](https://github.com/Liebesfreud/Komari-Material) 的 **1:1 移植版**：
-完整保留原版組件、樣式、字體與 Material Web 自定義元素，僅將數據層替換為 CFSM 公開 API。
-以 [Tokinx/cf-server-monitor-theme-emerald](https://github.com/Tokinx/cf-server-monitor-theme-emerald) 的移植方式為技術參考
-（Vue 3 + Vite 單頁應用，遵循 [theme-develop.md](https://github.com/huilang-me/CF-Server-Monitor/blob/main/theme-develop.md) 主題契約）。
+<p align="center">
+  <a href="https://github.com/Ebxh/cfsm-theme-material/releases/latest"><img alt="Latest Release" src="https://img.shields.io/github/v/release/Ebxh/cfsm-theme-material?display_name=tag&style=flat-square"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/Ebxh/cfsm-theme-material?style=flat-square"></a>
+  <a href="https://vuejs.org/"><img alt="Vue 3" src="https://img.shields.io/badge/Vue-3-42b883?style=flat-square&logo=vuedotjs&logoColor=white"></a>
+  <a href="https://m3.material.io/"><img alt="Material Design 3" src="https://img.shields.io/badge/Material-Design%203-6750a4?style=flat-square&logo=materialdesign&logoColor=white"></a>
+</p>
 
-## 上傳到 GitHub
+> [!IMPORTANT]
+> **CFSM Material 是基於 [Liebesfreud/Komari-Material](https://github.com/Liebesfreud/Komari-Material) 的移植版本，並非 CF-Server-Monitor 官方主題。**<br>
+> 完整保留原版組件、樣式、字體與 Material Web 自定義元素，僅將數據層替換為 CFSM 公開 API，並參考 [Tokinx/cf-server-monitor-theme-emerald](https://github.com/Tokinx/cf-server-monitor-theme-emerald) 的移植方式。
 
-本倉庫已按 `cf-server-monitor-theme-emerald` 的結構整理（`.github/workflows`、`docs/preview.png`、`AGENTS.md` 等）。
+## 項目關係
 
-### 一、創建倉庫並推送
+| 項目 | 與本主題的關係 |
+| --- | --- |
+| [CF-Server-Monitor](https://github.com/huilang-me/CF-Server-Monitor) | 本主題所服務的伺服器監控平台，提供後台、API 與主題運行環境 |
+| [Liebesfreud/Komari-Material](https://github.com/Liebesfreud/Komari-Material) | 本主題直接移植的原主題與代碼基礎（Komari Monitor 的 MD3 主題） |
+| [Tokinx/cf-server-monitor-theme-emerald](https://github.com/Tokinx/cf-server-monitor-theme-emerald) | 技術參考：Vue 3 + Vite 單頁應用，遵循 CFSM theme-develop.md 主題契約 |
+| **CFSM Material** | 在 Komari Material 基礎上移植到 CF-Server-Monitor 並持續維護的版本 |
 
-```bash
-# 1. 在 GitHub 上新建空倉庫（如 cfsm-theme-material），不要勾選 README/.gitignore
+## 主要特性
 
-# 2. 推送本工程（已在本地初始化 git）
-git remote add origin https://github.com/<你的用户名>/cfsm-theme-material.git
-git branch -M main
-git push -u origin main
-```
-
-### 二、生成構建產物分支（build）
-
-推送後 GitHub Actions 會自動執行：
-- **Build**：每次 push/PR 跑 `npm ci && npm run build`，驗證構建
-- **Deploy Build Branch**：把 `dist/` 部署到 `build` 分支（含 `index.html` + `assets/`）
-
-也可以在 Actions 頁面手動觸發 **Deploy Build Branch**。
-
-### 三、在 CFSM 後台啟用主題
-
-1. 登錄 CF-Server-Monitor 管理後台 → 外觀/主題設置
-2. 填入 **build 分支** 的 GitHub tree 地址：`https://github.com/<你的用户名>/cfsm-theme-material/tree/build`
-3. 將下方「主題自定義配置 JSON」粘貼到對應文本框（可按需增刪）並保存
-4. 刷新前台
-
-> 後台會反向代理 `build` 分支的 `index.html` 與 `assets/` 兩個路徑。
-
-## 功能特性
-
-- **Material Design 3 / Material You 動態配色**：手動種子色、18 款內置調色盤、壁紙取色三種模式，自動生成亮/暗兩套完整色階
-- **亮色 / 深色 / 跟隨系統**：頂欄一鍵切換，訪客選擇持久化到本地
-- **三種節點視圖**：卡片、列表、緊湊雙欄列表
-- **完整節點信息**：CPU、內存、磁盤、流量、上下行速率、延遲/丟包摘要、價格/到期標籤、自定義 tags
-- **世界地圖**：按地區聚合的節點散點分佈圖（ECharts，多 CDN 回退加載 GeoJSON）
-- **負載/延遲歷史圖表**：24h CPU/內存/磁盤曲線、1h 電信/聯通/移動/BGP 延遲曲線
-- **外觀面板**：主題模式、視圖、配色來源、密度、卡片材質（實色/半透明玻璃）、不透明度、頁寬，即時生效
-- **WebSocket 實時更新**：斷線指數退避重連、心跳保活、頁面隱藏自動掛起、多後端聚合
-- **擴展配置**：首頁公告（支持簡易 Markdown）、ICP/公安備案、自定義圖片/視頻背景（含模糊與遮罩）
-- **移動端適配**：響應式佈局，卡片/列表自動重排
+- **Material Design 3 / Material You**：統一使用 MD3 色彩、排版、形狀、狀態層與交互動效。
+- **動態配色**：手動種子色、18 款內置調色盤、壁紙取色三種模式，自動生成亮/暗兩套完整色階。
+- **亮色 / 深色 / 跟隨系統**：頂欄一鍵切換，訪客選擇持久化到本地。
+- **三種節點視圖**：卡片、列表、緊湊雙欄列表。
+- **完整節點信息**：CPU、內存、磁盤、月流量、上下行速率、延遲/丟包摘要、價格/到期標籤、自定義 tags。
+- **負載/延遲歷史圖表**：CPU/內存/磁盤曲線、電信/聯通/移動/BGP 延遲曲線（默認 10M 窗口）。
+- **世界地圖**：按地區聚合的節點散點分佈圖（ECharts，多 CDN 回退加載 GeoJSON）。
+- **卡片材質控制**：MD3 實色表面與半透明玻璃，可調整不透明度與亮色對比度。
+- **WebSocket 實時更新**：斷線指數退避重連、心跳保活、頁面隱藏自動掛起。
+- **可管理主題配置**：通過後台「主題自定義配置 JSON」集中管理選項。
+- **內容擴展**：首頁公告（支持簡易 Markdown）、ICP/公安備案、自定義圖片/視頻背景（含模糊與遮罩）。
+- **移動端適配**：響應式佈局，卡片/列表自動重排。
 
 ## 安裝
 
-### 方式一：主題倉庫安裝（推薦）
+### 方式一：GitHub tree 地址（推薦）
 
-1. 將本倉庫部署為 GitHub 倉庫（包含構建產物 `index.html` 與 `assets/`）
-2. 登錄 CF-Server-Monitor 管理後台 → 外觀/主題設置
-3. 填入本倉庫的 GitHub tree 地址（如 `https://github.com/<user>/cfsm-theme-material/tree/main`）
-4. 保存後刷新前台
+1. 在 GitHub 上新建空倉庫（如 `cfsm-theme-material`），不要勾選 README/.gitignore。
+2. 推送本工程（`main` 分支）。
+3. 推送構建產物分支 `build`（含 `index.html` + `assets/`）。
+   - 可由 `.github/workflows/deploy-build-branch.yml` 自動完成，或手動執行 `npm run build` 後將 `dist/` 推至 `build` 分支。
+4. 登錄 CF-Server-Monitor 管理後台 → **外觀/主題設置**。
+5. 填入 **build 分支** 的 GitHub tree 地址：
+   ```
+   https://github.com/<你的用戶名>/cfsm-theme-material/tree/build
+   ```
+6. 將下方「主題自定義配置 JSON」粘貼到對應文本框（可按需增刪）並保存。
+7. 保存後刷新前台。
+
+> 後台會反向代理 `build` 分支的 `index.html` 與 `assets/` 兩個路徑。由於 Worker 主題快取 TTL 約為 1 小時，更新後如需立即生效，請到 Cloudflare Dashboard → Caching → Purge Everything。
 
 ### 方式二：同源部署
 
@@ -145,6 +142,11 @@ location ~ ^/(flags|os-icons) {
 
 ## 本地開發
 
+### 環境要求
+
+- Node.js `^20.19.0 || >=22.12.0`
+- npm / pnpm
+
 ```bash
 npm install
 cp .env.example .env   # 填入 API_BASE，如 https://monitor.example.com
@@ -173,22 +175,48 @@ npm run build
 
 產物位於 `dist/`：僅包含 `index.html` 與 `assets/`，符合 CFSM 主題目錄約定。
 
+## 運行時約定
+
+- 路由：`/#/`、`/#/server/:id`
+- 後台管理入口：`${origin}#/admin`
+- 後端地址為當前頁面 origin（同源部署）
+- 匿名用戶最多可查詢近 24 小時歷史數據；登錄且開啟長歷史時最多可查詢近 7 天
+
 ## 項目結構
 
+```text
+src/                  Vue 應用源碼
+src/components/       節點卡片、列表、圖表、外觀面板、世界地圖等
+src/composables/      WebSocket 實時管理
+src/stores/           Pinia：主題配置（app）、節點狀態（nodes）、延遲（nodePing）
+src/styles/           MD3 全局樣式
+src/utils/            API 適配、MD3 配色引擎、格式化、地區/OS 工具
+src/views/            HomeView（首頁）、InstanceDetail（詳情頁）
+public/               運行時旗幟和系統 Logo
+docs/preview.png      README 封面與主題預覽圖
 ```
-src/
-├── components/      節點卡片/列表、圖表、外觀面板、世界地圖等
-├── composables/     WebSocket 實時管理
-├── stores/          Pinia：主題配置（app）、節點狀態（nodes）
-├── styles/          MD3 全局樣式
-├── utils/           API 適配、MD3 配色引擎、格式化、地區/OS 工具
-└── views/           HomeView（首頁）、InstanceDetail（詳情頁）
-```
+
+## 致謝
+
+特別感謝：
+
+- **[Liebesfreud/Komari-Material](https://github.com/Liebesfreud/Komari-Material)** — 本主題的直接上游，提供了 Material Design 3 風格的組件與樣式基礎。
+- **[Tokinx/cf-server-monitor-theme-emerald](https://github.com/Tokinx/cf-server-monitor-theme-emerald)** — 提供了 CF-Server-Monitor 主題移植的技術參考與最佳實踐。
+- **[huilang-me/CF-Server-Monitor](https://github.com/huilang-me/CF-Server-Monitor)** — 提供優秀的伺服器監控平台與主題運行環境。
+
+同時感謝以下開源項目：
+
+- [Vue](https://vuejs.org/)
+- [Vite](https://vite.dev/)
+- [Material Web](https://material-web.dev/)
+- [Material Color Utilities](https://github.com/material-foundation/material-color-utilities)
+- [UnoCSS](https://unocss.dev/)
+- [Apache ECharts](https://echarts.apache.org/)
 
 ## 許可證
 
-[MIT](LICENSE)
+本項目基於 [MIT License](LICENSE) 開源。
 
-- MD3 動態配色引擎移植自 [Liebesfreud/Komari-Material](https://github.com/Liebesfreud/Komari-Material)（Copyright © 2026 Liebesfreud），其上游 Komari Naive 保留 Copyright © 2025 Tony Liu
-- API 適配與數據模型參考 [Tokinx/cf-server-monitor-theme-emerald](https://github.com/Tokinx/cf-server-monitor-theme-emerald)（MIT）
-- 服務的監控平台：[huilang-me/CF-Server-Monitor](https://github.com/huilang-me/CF-Server-Monitor)（MIT）
+直接上游 Komari Material 與 Komari Naive 使用 MIT License，本倉庫繼續保留其原始版權聲明，並增加 `Copyright (c) 2026 Ebxh` 作為移植與後續維護的署名。
+
+使用、修改或分發本項目時，請同時保留原始版權聲明、二次開發署名與許可證文本。

@@ -1237,20 +1237,38 @@ export class KomariRpc {
       for (const server of servers) {
         const pingPoints = server.ping ?? []
         const lossPoints = server.loss ?? []
-        const lossByTs = new Map<number, CfPingPoint>()
-        for (const point of lossPoints)
-          lossByTs.set(finiteNumber(point?.ts), point)
 
-        for (const point of pingPoints) {
-          const ts = finiteNumber(point?.ts)
-          const lossPoint = lossByTs.get(ts)
+        if (pingPoints.length > 0 || lossPoints.length > 0) {
+          const lossByTs = new Map<number, CfPingPoint>()
+          for (const point of lossPoints)
+            lossByTs.set(finiteNumber(point?.ts), point)
+
+          for (const point of pingPoints) {
+            const ts = finiteNumber(point?.ts)
+            const lossPoint = lossByTs.get(ts)
+            for (const task of activeTasks) {
+              pushPoint(
+                server.id,
+                task.id,
+                ts,
+                point?.[task.key as keyof CfPingPoint],
+                lossPoint?.[task.key as keyof CfPingPoint],
+              )
+            }
+          }
+        }
+        else {
+          // CFSM 2.8+ 在 show_three_net_details=false 時不再內嵌 ping/loss 歷史陣列，
+          // 但仍返回當前 ping_*/loss_* 單點值；退而用之，令卡片摘要可顯示即時延遲/丟包。
+          const ts = timestamp(server.last_updated || server.timestamp)
+          const serverRecord = server as Record<string, unknown>
           for (const task of activeTasks) {
             pushPoint(
               server.id,
               task.id,
               ts,
-              point?.[task.key as keyof CfPingPoint],
-              lossPoint?.[task.key as keyof CfPingPoint],
+              serverRecord[`ping_${task.key}`],
+              serverRecord[`loss_${task.key}`],
             )
           }
         }
