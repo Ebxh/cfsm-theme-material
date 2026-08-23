@@ -336,7 +336,6 @@ export const useNodePingStore = defineStore('nodePing', () => {
   const fetchStatus = ref<'idle' | 'success' | 'error'>('idle')
   const subscriberCount = ref(0)
 
-  let refreshTimer: ReturnType<typeof setInterval> | null = null
   let pendingRequest: Promise<void> | null = null
 
   async function fetchRecords(): Promise<void> {
@@ -380,20 +379,11 @@ export const useNodePingStore = defineStore('nodePing', () => {
   }
 
   function startRefresh() {
-    if (refreshTimer)
-      return
-
     void fetchRecords()
-    refreshTimer = setInterval(() => {
-      void fetchRecords()
-    }, PING_REFRESH_INTERVAL_MS)
   }
 
   function stopRefresh() {
-    if (!refreshTimer)
-      return
-    clearInterval(refreshTimer)
-    refreshTimer = null
+    pendingRequest = null
   }
 
   function retain() {

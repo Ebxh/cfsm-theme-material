@@ -1,20 +1,23 @@
 <script setup lang="ts">
 import dayjs from 'dayjs'
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import VChart from 'vue-echarts'
+import type { PingRecord, PingTask } from '@/utils/api'
 import { useAppStore } from '@/stores/app'
 import { cutPeakValues, interpolateNullsLinear } from '@/utils/recordHelper'
-import { getSharedRpc } from '@/utils/rpc'
 import '@/utils/echarts' // 共享 ECharts 配置
 
 const props = defineProps<{
   uuid: string
+  records: PingRecord[]
+  tasks: PingTask[]
+  hours: number
+  loading: boolean
+  error: string | null
 }>()
 
 const appStore = useAppStore()
 const isDark = computed(() => appStore.isDark)
-// 使用共享的 RPC 实例，避免重复创建连接
-const rpc = getSharedRpc()
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, character => ({
@@ -49,48 +52,7 @@ const chartColors = new Proxy([] as string[], {
   },
 })
 
-// 从 publicSettings 获取记录保留时间
-const maxPingRecordPreserveTime = computed(() => appStore.publicSettings?.ping_record_preserve_time ?? 168)
-
-// 视图选项（CFSM 9 个固定时间窗口）
-const presetViews = [
-  { label: '10M', hours: 0.167 },
-  { label: '30M', hours: 0.5 },
-  { label: '1H', hours: 1 },
-  { label: '6H', hours: 6 },
-  { label: '12H', hours: 12 },
-  { label: '24H', hours: 24 },
-  { label: '2D', hours: 48 },
-  { label: '4D', hours: 96 },
-  { label: '7D', hours: 168 },
-]
-
-// 可用视图列表（CFSM 主题：始终渲染 9 个固定窗口）
-const availableViews = computed(() => presetViews)
-
-// 当前选中的视图（默認 10M，與 CFSM 原始皮膚一致）
-const selectedView = ref<string>('10M')
-const selectedHours = computed(() => {
-  const view = availableViews.value.find(v => v.label === selectedView.value)
-  return view?.hours ?? 1
-})
-
-// 初始化默认视图
-watch(availableViews, (views) => {
-  const firstView = views[0]
-  if (!views.some(view => view.label === selectedView.value)) {
-    selectedView.value = firstView?.label ?? '24H'
-  }
-}, { immediate: true })
-
 // ==================== 类型定义 ====================
-
-interface PingRecord {
-  client: string
-  task_id: number
-  time: string
-  value: number
-}
 
 interface TaskInfo {
   id: number
@@ -107,16 +69,6 @@ interface TaskInfo {
   total?: number
   type?: string
 }
-
-interface PingRecordsResponse {
-  count: number
-  records: PingRecord[]
-  tasks?: TaskInfo[]
-  from?: string
-  to?: string
-}
-
-const denseWindowHours = 24
 
 function getPercentile(values: number[], percentile: number): number {
   if (values.length === 0)
@@ -151,7 +103,9 @@ function summarizeTasks(taskInfo: TaskInfo[], records: PingRecord[]): TaskInfo[]
 
     return {
       ...task,
-      loss: taskRecords.length > 0
+      loss: Number.isFinite(task.loss)
+        ? task.loss
+        : taskRecords.length > 0
         ? taskRecords.filter(record => record.value < 0).length / taskRecords.length * 100
         : 0,
       min: validValues.length > 0 ? Math.min(...validValues) : 0,
@@ -168,113 +122,18 @@ function summarizeTasks(taskInfo: TaskInfo[], records: PingRecord[]): TaskInfo[]
   })
 }
 
-async function fetchPingRecords(uuid: string, hours: number): Promise<PingRecordsResponse> {
-  if (hours <= denseWindowHours) {
-    return rpc.getClient().call<PingRecordsResponse>('common:getRecords', {
-      uuid,
-      type: 'ping',
-      hours,
-    })
-  }
-
-  const endTime = dayjs()
-  const startTime = endTime.subtract(hours, 'hour')
-  const windowCount = Math.ceil(hours / denseWindowHours)
-  const requests = Array.from({ length: windowCount }, (_, index) => {
-    const windowStart = startTime.add(index * denseWindowHours, 'hour')
-    const windowEnd = startTime.add(Math.min((index + 1) * denseWindowHours, hours), 'hour')
-    return rpc.getClient().call<PingRecordsResponse>('common:getRecords', {
-      uuid,
-      type: 'ping',
-      start: windowStart.toISOString(),
-      end: windowEnd.toISOString(),
-    })
-  })
-  const responses = await Promise.all(requests)
-  const uniqueRecords = new Map<string, PingRecord>()
-
-  for (const response of responses) {
-    for (const record of response.records ?? []) {
-      uniqueRecords.set(`${record.client}:${record.task_id}:${record.time}`, record)
-    }
-  }
-
-  const records = [...uniqueRecords.values()]
-    .sort((a, b) => dayjs(a.time).valueOf() - dayjs(b.time).valueOf())
-  const taskInfo = [...responses]
-    .reverse()
-    .find(response => response.tasks && response.tasks.length > 0)
-    ?.tasks ?? []
-
-  return {
-    count: records.length,
-    records,
-    tasks: summarizeTasks(taskInfo, records),
-    from: startTime.toISOString(),
-    to: endTime.toISOString(),
-  }
-}
-
 // 数据状态
-const remoteData = shallowRef<PingRecord[]>([])
-const tasks = shallowRef<TaskInfo[]>([])
-const loading = ref(false)
-const error = ref<string | null>(null)
-let latestFetchId = 0
+const remoteData = computed(() => props.records)
+const tasks = computed<TaskInfo[]>(() => summarizeTasks(props.tasks, remoteData.value))
+const selectedHours = computed(() => props.hours)
+const loading = computed(() => props.loading)
+const error = computed(() => props.error)
 
 // 任务选择
 const selectedTaskIds = ref<number[]>([])
 const cutPeak = ref(false)
 
 const chartMargin = { top: 12, right: 24, bottom: 52, left: 56 }
-
-// ==================== 数据获取 ====================
-
-async function fetchRecords() {
-  const requestId = ++latestFetchId
-  if (!props.uuid || maxPingRecordPreserveTime.value <= 0) {
-    remoteData.value = []
-    tasks.value = []
-    loading.value = false
-    error.value = null
-    return
-  }
-
-  const uuid = props.uuid
-  const hours = selectedHours.value
-  loading.value = true
-  error.value = null
-
-  try {
-    const result = await fetchPingRecords(uuid, hours)
-
-    if (requestId !== latestFetchId)
-      return
-
-    const records = [...(result?.records || [])]
-      .sort((a, b) => dayjs(a.time).valueOf() - dayjs(b.time).valueOf())
-
-    remoteData.value = records
-    tasks.value = result?.tasks || []
-
-    if (tasks.value.length > 0 && selectedTaskIds.value.length === 0) {
-      selectedTaskIds.value = tasks.value.map(t => t.id)
-    }
-  }
-  catch (err) {
-    if (requestId !== latestFetchId)
-      return
-
-    error.value = err instanceof Error ? err.message : '获取数据失败'
-    remoteData.value = []
-    tasks.value = []
-  }
-  finally {
-    if (requestId === latestFetchId) {
-      loading.value = false
-    }
-  }
-}
 
 // ==================== 数据处理 ====================
 
@@ -615,31 +474,18 @@ const pingChartOption = computed(() => {
   }
 })
 
-// ==================== 生命周期 ====================
-
-watch(selectedView, () => {
-  selectedTaskIds.value = []
-  void fetchRecords()
-})
-
-watch(() => props.uuid, () => {
-  remoteData.value = []
-  tasks.value = []
-  selectedTaskIds.value = []
-  void fetchRecords()
-})
-
-onMounted(() => {
-  const firstView = availableViews.value[0]
-  if (firstView && !selectedView.value) {
-    selectedView.value = firstView.label
-  }
-  void fetchRecords()
-})
-
-onUnmounted(() => {
-  latestFetchId += 1
-})
+watch(
+  () => `${props.uuid}:${props.tasks.map(task => task.id).join(',')}`,
+  (_next, previous) => {
+    const ids = props.tasks.map(task => task.id)
+    if (!previous || selectedTaskIds.value.length === 0 || !previous.startsWith(`${props.uuid}:`)) {
+      selectedTaskIds.value = ids
+      return
+    }
+    selectedTaskIds.value = selectedTaskIds.value.filter(id => ids.includes(id))
+  },
+  { immediate: true },
+)
 
 // 是否启用模糊背景
 const hasBackgroundBlur = computed(() => appStore.backgroundEnabled && appStore.backgroundBlur > 0)
@@ -663,20 +509,6 @@ const blurClass = computed(() => {
 
 <template>
   <div class="ping-chart">
-    <div class="md-control-row ping-chart__range-row">
-      <button
-        v-for="view in availableViews"
-        :key="view.label"
-        class="md-control-button"
-        :class="{ 'is-active': selectedView === view.label }"
-        type="button"
-        :aria-pressed="selectedView === view.label"
-        @click="selectedView = view.label"
-      >
-        {{ view.label }}
-      </button>
-    </div>
-
     <div class="md-loading-box ping-chart__content" :class="{ 'is-loading': loading }">
       <div v-if="loading" class="ping-chart__loading">
         <md-circular-progress class="md-native-loader" indeterminate aria-label="加载中" />
@@ -752,12 +584,6 @@ const blurClass = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.ping-chart__range-row .md-control-button.is-active {
-  border-color: var(--md-sys-color-primary);
-  color: var(--md-sys-color-on-primary);
-  background: var(--md-sys-color-primary);
 }
 
 .ping-chart__content {

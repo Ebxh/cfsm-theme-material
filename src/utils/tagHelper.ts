@@ -294,7 +294,7 @@ export function parseTags(tags: string | undefined): Array<{ text: string, color
   if (!tags || tags.trim() === '')
     return []
 
-  const tagList = tags.split(/[,;]/).filter(tag => tag.trim() !== '')
+  const tagList = tags.split(/[,;]/).map(tag => tag.trim()).filter(Boolean)
 
   return tagList.map((tag, index) => {
     const { text, color } = parseTagWithColor(tag)

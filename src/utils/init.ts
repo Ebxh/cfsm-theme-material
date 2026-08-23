@@ -4,7 +4,7 @@
  */
 
 import type { Client, KomariRpc, NodeStatus } from '@/utils/rpc'
-import { h, watch } from 'vue'
+import { h } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { useNodesStore } from '@/stores/nodes'
 import { getSharedApi } from '@/utils/api'
@@ -14,27 +14,24 @@ import { getSharedRpc, RpcError } from '@/utils/rpc'
 interface InitConfig {
   /** WebSocket 重连间隔（毫秒） */
   wsReconnectInterval?: number
-  /** WebSocket 最大重连次数（失败后回落 POST） */
+  /** WebSocket 最大重连次数（失败后暂停实时更新） */
   wsMaxReconnectAttempts?: number
   /** 后端健康检查超时（毫秒） */
   healthCheckTimeout?: number
-  /** POST 模式连续失败次数阈值 */
-  postFailureThreshold?: number
 }
 
 const DEFAULT_CONFIG: Required<InitConfig> = {
   wsReconnectInterval: 3000,
   wsMaxReconnectAttempts: 5,
   healthCheckTimeout: 5000,
-  postFailureThreshold: 3,
 }
 
 /**
- * WebSocket 已連接並持續推送 batchUpdate 時，輪詢降速為「協調窗口」：
- * 實時指標由 WS 驅動，輪詢僅用於校正客戶端元數據與偶發漂移，避免對
- * Cloudflare Worker 造成 1s 級的高頻請求壓力。
+ * 首页实时更新只使用 /api/ws?subscribe=all。
+ * 详情页进入时只请求一次 /api/server?id=<id> 作为基础快照，后续更新由
+ * /api/ws?subscribe=<id> 的 batchUpdate 推送驱动。
  */
-const RECONCILE_POLL_INTERVAL_MS = 30000
+let pendingFocusedNodeId: string | null = null
 
 /** 初始化状态管理 */
 class InitManager {
@@ -42,14 +39,12 @@ class InitManager {
   private rpc: KomariRpc
   private appStore: ReturnType<typeof useAppStore>
   private nodesStore: ReturnType<typeof useNodesStore>
-  private pollTimer: ReturnType<typeof setInterval> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
-  private isPolling = false
   private isInitialized = false
   private isDestroyed = false
-  private useWebSocket: boolean | null = null // 根据主题配置决定
+  private useWebSocket: boolean | null = null
   private postFailureCount = 0
-  private stopPollIntervalWatch: (() => void) | null = null
+  private focusedNodeId: string | null = pendingFocusedNodeId
   /** WebSocket 實時狀態訂閱的取消函數（常駐，註冊一次） */
   private wsLiveStatusOff: (() => void) | null = null
 
@@ -58,25 +53,6 @@ class InitManager {
     this.rpc = getSharedRpc()
     this.appStore = useAppStore()
     this.nodesStore = useNodesStore()
-    this.stopPollIntervalWatch = watch(
-      () => this.appStore.dataUpdateInterval,
-      (nextInterval, previousInterval) => {
-        if (nextInterval === previousInterval || !this.pollTimer || this.isDestroyed)
-          return
-        this.startPolling()
-      },
-    )
-  }
-
-  /**
-   * 获取轮询间隔（毫秒）
-   * WebSocket 已連接並持續推送 batchUpdate 時，降速為協調窗口（30s），
-   * 實時指標由 WS 驅動；未連接 WS（HTTP 模式或重連中）則使用主題配置的刷新間隔。
-   */
-  private getPollInterval(): number {
-    if (this.useWebSocket === true && this.nodesStore.wsConnectionState === 'connected')
-      return RECONCILE_POLL_INTERVAL_MS
-    return this.appStore.dataUpdateInterval * 1000
   }
 
   /**
@@ -263,6 +239,11 @@ class InitManager {
    */
   private async fetchNodesData(): Promise<void> {
     try {
+      if (this.focusedNodeId) {
+        await this.fetchFocusedNodeData(this.focusedNodeId, true)
+        return
+      }
+
       // 并行获取节点信息和最新状态
       const [clientsResult, statusesResult] = await Promise.all([
         this.rpc.getNodes() as Promise<Record<string, Client>>,
@@ -278,46 +259,40 @@ class InitManager {
     }
   }
 
+  private async fetchFocusedNodeData(uuid: string, replace = false): Promise<void> {
+    const snapshot = await this.rpc.getNodeSnapshot(uuid)
+    if (replace)
+      this.nodesStore.initNodes({ [uuid]: snapshot.client }, { [uuid]: snapshot.status })
+    else
+      this.nodesStore.upsertNode(snapshot.client, snapshot.status)
+  }
+
   /**
-   * 启动 WebSocket 连接和轮询
+   * 启动 WebSocket 连接；首页和详情页实时更新都只走 WS
    */
   private startWebSocketAndPolling(): void {
-    // 根据主题配置决定初始连接模式
-    const configuredMode = this.appStore.rpcTransportMode
-    this.useWebSocket = configuredMode === 'websocket'
+    this.useWebSocket = true
 
-    if (this.useWebSocket) {
-      // 訂閱 WebSocket 實時狀態推送（僅註冊一次；監聽器常駐於 RpcClient 單例）。
-      // CFSM 的 batchUpdate 增量會在此合併到最新 /api/servers 快照並直接寫入 store，
-      // 使首頁與詳情頁無需高頻輪詢即可即時刷新。
-      if (!this.wsLiveStatusOff) {
-        this.wsLiveStatusOff = this.rpc.onLiveStatus((statuses) => {
-          if (this.isDestroyed)
-            return
-          this.nodesStore.updateNodeStatuses(statuses)
-          this.postFailureCount = 0
-          this.appStore.connectionError = false
-        })
-      }
-      // 尝试建立 WebSocket 连接
-      this.connectWebSocket()
-    }
-    else {
-      // HTTP 模式：直接设置 RPC 客户端为 HTTP 模式
-      const client = this.rpc.getClient()
-      client.setTransport(false)
-      this.nodesStore.updateWsState('disconnected', this.config.wsMaxReconnectAttempts)
+    // 訂閱 WebSocket 實時狀態推送（僅註冊一次；監聽器常駐於 RpcClient 單例）。
+    // 首頁由 /api/ws?subscribe=all 推送更新，不再啟動 HTTP 全量輪詢。
+    if (!this.wsLiveStatusOff) {
+      this.wsLiveStatusOff = this.rpc.onLiveStatus((statuses) => {
+        if (this.isDestroyed)
+          return
+        this.nodesStore.updateNodeStatuses(statuses)
+        this.postFailureCount = 0
+        this.appStore.connectionError = false
+      })
     }
 
-    // 开始轮询（作为 WebSocket 的补充或备选方案）
-    this.startPolling()
+    this.connectWebSocket()
   }
 
   /**
    * 建立 WebSocket 连接
    */
   private async connectWebSocket(): Promise<void> {
-    // 如果已回落到 POST 模式或配置为 HTTP 模式，不再尝试 WebSocket
+    // 实时更新只使用 WebSocket；关闭或销毁后不再尝试连接
     if (this.useWebSocket !== true) {
       return
     }
@@ -342,9 +317,6 @@ class InitManager {
 
       // 连接成功，重置错误状态
       this.appStore.connectionError = false
-
-      // WS 已驅動實時推送，將輪詢降速為協調窗口（30s）以減輕 Worker 負載
-      this.startPolling()
 
       // 监听连接状态变化
       this.monitorWebSocketConnection()
@@ -394,10 +366,12 @@ class InitManager {
 
     const attempts = this.nodesStore.wsReconnectAttempts
 
-    // 达到最大重连次数，回落到 POST 模式
+    // 达到最大重连次数后停止重连，不回落到全量 HTTP 轮询
     if (attempts >= this.config.wsMaxReconnectAttempts) {
-      console.error('[InitManager] Max reconnect attempts reached, falling back to POST mode')
-      this.fallbackToPostMode()
+      console.error('[InitManager] Max reconnect attempts reached')
+      this.nodesStore.updateWsState('disconnected', this.config.wsMaxReconnectAttempts)
+      this.appStore.connectionError = true
+      window.$message?.warning('WebSocket 无法连接，实时更新已暂停。')
       return
     }
 
@@ -427,102 +401,17 @@ class InitManager {
     }
   }
 
-  /**
-   * 回落到 POST 模式
-   */
-  private fallbackToPostMode(): void {
-    this.clearReconnectTimer()
-    this.useWebSocket = false
-    this.nodesStore.updateWsState('disconnected', this.config.wsMaxReconnectAttempts)
-
-    // 关闭 WebSocket 连接
-    const client = this.rpc.getClient()
-    client.setTransport(false)
-    client.close()
-
-    // 回落後輪詢恢復主題配置的刷新間隔（getPollInterval 已因 useWebSocket=false 而切回）
-    this.startPolling()
-
-    // 显示提示
-    window.$message?.warning('WebSocket 无法连接，尝试回落 POST 模式。')
-  }
-
-  /**
-   * 开始轮询
-   */
-  private startPolling(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer)
-    }
-
-    this.pollTimer = setInterval(() => {
-      this.poll()
-    }, this.getPollInterval())
-  }
-
-  /**
-   * 执行轮询任务
-   *
-   * 每輪只發起一次 /api/servers 請求（getNodes 與 getNodesLatestStatus 透過
-   * 共享快照緩存合併為同一 HTTP 調用）。實時指標由 WebSocket batchUpdate 驅動，
-   * 輪詢僅作為協調/兜底；WS 連接期間間隔已降速為 RECONCILE_POLL_INTERVAL_MS。
-   */
-  private async poll(): Promise<void> {
-    if (this.isPolling) {
+  setFocusedNodeId(uuid: string | null): void {
+    if (this.focusedNodeId === uuid)
       return
-    }
 
-    this.isPolling = true
+    this.focusedNodeId = uuid
 
-    try {
-      // 并行获取节点信息与最新状态（共享快照，仅一次 HTTP 请求）
-      const [clientsResult, statusesResult] = await Promise.all([
-        // 1. 获取节点信息
-        this.rpc.getNodes() as Promise<Record<string, Client>>,
-        // 2. 获取节点最新状态
-        this.rpc.getNodesLatestStatus() as Promise<Record<string, NodeStatus>>,
-      ])
+    if (!this.isInitialized || this.isDestroyed)
+      return
 
-      if (this.isDestroyed) {
-        return
-      }
-
-      // 更新节点信息（会智能合并，不会重建数组）
-      this.nodesStore.updateNodeClients(clientsResult)
-
-      // 更新节点状态
-      this.nodesStore.updateNodeStatuses(statusesResult)
-
-      // 连接恢复正常，重置错误状态
-      this.postFailureCount = 0
-      this.appStore.connectionError = false
-    }
-    catch (error) {
-      if (error instanceof RpcError) {
-        console.error('[InitManager] Poll RPC error:', error.message)
-      }
-      else {
-        console.error('[InitManager] Poll error:', error)
-      }
-
-      this.postFailureCount += 1
-      if (this.postFailureCount >= this.config.postFailureThreshold) {
-        this.appStore.connectionError = true
-      }
-    }
-    finally {
-      this.isPolling = false
-    }
-  }
-
-  /**
-   * 停止轮询
-   */
-  stopPolling(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer)
-      this.pollTimer = null
-    }
+    if (uuid)
+      void this.fetchFocusedNodeData(uuid)
   }
 
   /**
@@ -538,9 +427,8 @@ class InitManager {
       client.close()
     }
 
-    // 根据主题配置重置连接模式
-    const configuredMode = this.appStore.rpcTransportMode
-    this.useWebSocket = configuredMode === 'websocket'
+    // 登录后仍只使用 WebSocket 实时更新，不回落到全量 HTTP 轮询
+    this.useWebSocket = true
     this.nodesStore.updateWsState('disconnected', 0)
 
     // 重新获取用户信息
@@ -550,12 +438,7 @@ class InitManager {
       return
     }
 
-    if (this.useWebSocket) {
-      void this.connectWebSocket()
-    }
-    else {
-      client.setTransport(false)
-    }
+    void this.connectWebSocket()
   }
 
   /**
@@ -566,11 +449,8 @@ class InitManager {
     this.clearReconnectTimer()
     this.useWebSocket = false
     this.postFailureCount = 0
-    this.stopPollIntervalWatch?.()
-    this.stopPollIntervalWatch = null
     this.wsLiveStatusOff?.()
     this.wsLiveStatusOff = null
-    this.stopPolling()
     this.rpc.close()
     this.nodesStore.clearNodes()
     this.isInitialized = false
@@ -598,6 +478,12 @@ export function getInitManager(): InitManager | null {
   return initManager
 }
 
+export function setFocusedNodeId(uuid: string | null): void {
+  pendingFocusedNodeId = uuid
+  getSharedRpc().getClient().setWsFocus(uuid)
+  initManager?.setFocusedNodeId(uuid)
+}
+
 /**
  * 销毁初始化管理器
  */
@@ -606,6 +492,7 @@ export function destroyInitManager(): void {
     initManager.destroy()
     initManager = null
   }
+  pendingFocusedNodeId = null
 }
 
 /**

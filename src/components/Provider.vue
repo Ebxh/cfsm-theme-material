@@ -208,6 +208,7 @@ watch(
   [() => appStore.backgroundEnabled, isDark],
   ([enabled, dark]) => {
     const body = document.body
+    body.classList.toggle('has-background', enabled)
     if (enabled) {
       body.style.setProperty('background-color', 'transparent', 'important')
     }

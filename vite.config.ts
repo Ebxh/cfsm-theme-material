@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath, URL } from 'node:url'
 import vue from '@vitejs/plugin-vue'
 import UnoCSS from 'unocss/vite'
@@ -16,6 +17,19 @@ function normalizeOrigin(value: string): string | null {
   }
   catch {
     return null
+  }
+}
+
+function getDevHttpsConfig() {
+  const keyPath = fileURLToPath(new URL('./.cert/localhost-key.pem', import.meta.url))
+  const certPath = fileURLToPath(new URL('./.cert/localhost.pem', import.meta.url))
+
+  if (!existsSync(keyPath) || !existsSync(certPath))
+    return undefined
+
+  return {
+    key: readFileSync(keyPath),
+    cert: readFileSync(certPath),
   }
 }
 
@@ -46,6 +60,7 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      https: getDevHttpsConfig(),
       host: '0.0.0.0',
       port: 5173,
       proxy: env.API_BASE && apiBases.length === 1

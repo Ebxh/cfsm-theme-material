@@ -673,3 +673,95 @@ img {
     );
   }
 }
+
+// 自定义背景启用时，普通 surface 也需要透出背景图。这里不要使用 opacity，
+// 否则文字、图标、图表会一起变淡；只把模块底色混到 transparent。
+body.has-background {
+  --md-app-background-surface-opacity: 60%;
+  --md-app-background-surface-hover-opacity: 68%;
+
+  .md-card:not(.md-surface-glass),
+  .md-card--outlined:not(.md-surface-glass),
+  .md-control-button:not(.is-active),
+  .md-segmented-control,
+  .node-toolbar__search,
+  .node-toolbar__search-clear,
+  .node-compact-card__metric,
+  .node-ping-summary__stat,
+  .material-top-app-bar,
+  .world-map__legend,
+  .world-map__controls,
+  .dashboard-card__metric,
+  .overview-dialog__section,
+  .overview-dialog__metric,
+  .world-map-dialog__panel,
+  .world-map-dialog__metric,
+  .appearance-panel__section,
+  .appearance-panel__preview,
+  .appearance-panel__footer {
+    background: color-mix(
+      in srgb,
+      var(--md-sys-color-surface) var(--md-app-background-surface-opacity),
+      transparent
+    );
+  }
+
+  .md-card--filled:not(.md-surface-glass),
+  .home-view__alert-wrap,
+  .node-card__status-item,
+  .general-card__metric,
+  .ping-chart__legend,
+  .load-chart__legend,
+  .traffic-progress__rail,
+  .world-map__tooltip,
+  .home-skeleton__block,
+  .home-skeleton__line {
+    background: color-mix(
+      in srgb,
+      var(--md-sys-color-surface-container-high) var(--md-app-background-surface-opacity),
+      transparent
+    );
+  }
+
+  .md-card--interactive:not(.md-surface-glass):hover,
+  .md-control-button:not(.is-active):hover {
+    background: color-mix(
+      in srgb,
+      var(--md-sys-color-surface) var(--md-app-background-surface-hover-opacity),
+      transparent
+    );
+  }
+
+  .md-alert {
+    background: color-mix(
+      in srgb,
+      var(--md-sys-color-secondary-container) var(--md-app-background-surface-opacity),
+      transparent
+    );
+  }
+
+  .md-alert--error,
+  .md-chip--error {
+    background: color-mix(
+      in srgb,
+      var(--md-sys-color-error-container) var(--md-app-background-surface-opacity),
+      transparent
+    );
+  }
+
+  .md-alert--success {
+    background: color-mix(
+      in srgb,
+      var(--md-chart-success) 18%,
+      transparent
+    );
+  }
+
+  .md-alert--warning {
+    background: color-mix(
+      in srgb,
+      var(--md-chart-warning) 18%,
+      transparent
+    );
+  }
+}

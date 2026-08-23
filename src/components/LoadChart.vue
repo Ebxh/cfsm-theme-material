@@ -1,31 +1,25 @@
 <script setup lang="ts">
 import type { RecordFormat } from '@/utils/recordHelper'
-import { useIntervalFn } from '@vueuse/core'
+import type { LoadRecord } from '@/utils/api'
 import dayjs from 'dayjs'
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed } from 'vue'
 import VChart from 'vue-echarts'
 import { useAppStore } from '@/stores/app'
 import { useNodesStore } from '@/stores/nodes'
-import { getSharedApi } from '@/utils/api'
 import { formatBytes, formatBytesSplit } from '@/utils/helper'
 import { fillMissingTimePoints } from '@/utils/recordHelper'
-import { getSharedRpc } from '@/utils/rpc'
 import '@/utils/echarts' // 共享 ECharts 配置
 
 const props = defineProps<{
   uuid: string
+  records: LoadRecord[]
+  hours: number
+  loading: boolean
+  error: string | null
 }>()
 
 const appStore = useAppStore()
 const nodesStore = useNodesStore()
-
-// 从 publicSettings 获取记录保留时间
-const maxRecordPreserveTime = computed(() => appStore.publicSettings?.record_preserve_time ?? 720)
-
-// 使用 store 统一归一化后台数据更新间隔（秒）
-const dataUpdateInterval = computed(() => {
-  return appStore.dataUpdateInterval * 1000
-})
 
 // 使用 store 中的 isDark computed
 const isDark = computed(() => appStore.isDark)
@@ -88,71 +82,17 @@ const baseTooltipConfig = computed(() => ({
 const chartMargin = { top: 12, right: 24, bottom: 32, left: 56 }
 const chartMarginWithLegend = { top: 12, right: 24, bottom: 52, left: 56 }
 
-// 视图选项（CFSM 9 个固定时间窗口，hours 值对应 /api/history/all 合法入参）
-const presetViews = [
-  { label: '10M', hours: 0.167 },
-  { label: '30M', hours: 0.5 },
-  { label: '1H', hours: 1 },
-  { label: '6H', hours: 6 },
-  { label: '12H', hours: 12 },
-  { label: '24H', hours: 24 },
-  { label: '2D', hours: 48 },
-  { label: '4D', hours: 96 },
-  { label: '7D', hours: 168 },
-]
-
-interface LoadChartRecord {
-  client: string
-  time: string
-  cpu: number
-  gpu: number
-  ram: number
-  ram_total: number
-  swap: number
-  swap_total: number
-  load: number
-  temp: number
-  disk: number
-  disk_total: number
-  net_in: number
-  net_out: number
-  net_total_up: number
-  net_total_down: number
-  process: number
-  connections: number
-  connections_udp: number
-}
-
-// 可用视图列表（CFSM 主题：始终渲染 9 个固定窗口；hours 值与 /api/history/all 合法入参对齐）
-const availableViews = computed(() => presetViews)
-
-// 当前选中的视图（默認 10M，與 CFSM 原始皮膚一致）
-const selectedView = ref<string>('10M')
-const selectedHours = computed(() => {
-  const view = availableViews.value.find(v => v.label === selectedView.value)
-  return view?.hours ?? 24
-})
-// 移除实时模式（CFSM 主题：固定 9 个历史窗口，不做"实时"轮询）
-const isRealtime = computed(() => false)
-
-// 数据状态
-const remoteData = shallowRef<LoadChartRecord[]>([])
-const loading = ref(false)
-const isInitialLoad = ref(true) // 是否为首次加载（用于控制实时模式下的加载状态）
-const error = ref<string | null>(null)
-let latestFetchId = 0
-let activeFetchCount = 0
+const remoteData = computed(() => props.records)
+const selectedHours = computed(() => props.hours)
+const loading = computed(() => props.loading)
+const error = computed(() => props.error)
 
 // 节点信息
 const nodeInfo = computed(() => nodesStore.nodesByUuid.get(props.uuid))
 
-// RPC 客户端
-const rpc = getSharedRpc()
-const api = getSharedApi()
-
 // ==================== 数据获取 ====================
 
-function statusToRecordFormat(records: LoadChartRecord[]): RecordFormat[] {
+function statusToRecordFormat(records: LoadRecord[]): RecordFormat[] {
   return records.map(r => ({
     client: r.client,
     time: r.time,
@@ -178,78 +118,12 @@ function statusToRecordFormat(records: LoadChartRecord[]): RecordFormat[] {
   }))
 }
 
-async function requestRecentData(uuid: string): Promise<LoadChartRecord[]> {
-  const result = await rpc.getNodeRecentStatus(uuid)
-  return [...(result?.records || [])]
-    .sort((a, b) => dayjs(a.time).valueOf() - dayjs(b.time).valueOf())
-    .slice(-150)
-}
-
-async function requestHistoryData(uuid: string, hours: number): Promise<LoadChartRecord[]> {
-  const response = await api.getLoadRecords(uuid, hours)
-  return [...(response.records || [])].sort(
-    (a, b) => dayjs(a.time).valueOf() - dayjs(b.time).valueOf(),
-  )
-}
-
-async function fetchData(options: { skipIfBusy?: boolean } = {}) {
-  if (options.skipIfBusy && activeFetchCount > 0)
-    return
-
-  const requestId = ++latestFetchId
-  if (!props.uuid) {
-    remoteData.value = []
-    loading.value = false
-    error.value = null
-    return
-  }
-
-  const uuid = props.uuid
-  const realtime = isRealtime.value
-  const hours = selectedHours.value || 4
-
-  activeFetchCount += 1
-  if (!realtime || isInitialLoad.value) {
-    loading.value = true
-  }
-  error.value = null
-
-  try {
-    const records = realtime
-      ? await requestRecentData(uuid)
-      : await requestHistoryData(uuid, hours)
-
-    if (requestId !== latestFetchId)
-      return
-
-    remoteData.value = records
-  }
-  catch (err) {
-    if (requestId !== latestFetchId)
-      return
-
-    error.value = err instanceof Error ? err.message : '获取数据失败'
-    remoteData.value = []
-  }
-  finally {
-    activeFetchCount = Math.max(0, activeFetchCount - 1)
-    if (requestId === latestFetchId) {
-      loading.value = false
-      isInitialLoad.value = false
-    }
-  }
-}
-
 // ==================== 数据处理 ====================
 
 const chartData = computed(() => {
   const data = statusToRecordFormat(remoteData.value)
   if (!data.length)
     return []
-
-  if (isRealtime.value) {
-    return data
-  }
 
   const hours = selectedHours.value || 4
   const minute = 60
@@ -783,25 +657,6 @@ const processChartOption = computed(() => ({
   ],
 }))
 
-// ==================== 实时更新 ====================
-
-// 使用 VueUse 的 useIntervalFn 自动管理定时器
-const { pause: pauseRealtimeUpdate, resume: resumeRealtimeUpdate } = useIntervalFn(
-  () => void fetchData({ skipIfBusy: true }),
-  dataUpdateInterval,
-  { immediate: false },
-)
-
-// 根据是否为实时模式控制定时器
-watch(isRealtime, (realtime) => {
-  if (realtime) {
-    resumeRealtimeUpdate()
-  }
-  else {
-    pauseRealtimeUpdate()
-  }
-}, { immediate: true })
-
 // 是否启用模糊背景
 const hasBackgroundBlur = computed(() => appStore.backgroundEnabled && appStore.backgroundBlur > 0)
 
@@ -821,43 +676,10 @@ const blurClass = computed(() => {
   return `glass-${radius}`
 })
 
-// ==================== 生命周期 ====================
-
-watch(selectedView, () => {
-  isInitialLoad.value = true // 切换视图时重置首次加载状态
-  void fetchData()
-})
-
-watch(() => props.uuid, () => {
-  remoteData.value = []
-  isInitialLoad.value = true // 切换节点时重置首次加载状态
-  void fetchData()
-})
-
-onMounted(() => {
-  void fetchData()
-})
-
-onUnmounted(() => {
-  latestFetchId += 1
-})
 </script>
 
 <template>
   <div class="load-chart">
-    <div class="md-control-row">
-      <button
-        v-for="view in availableViews"
-        :key="view.label"
-        class="md-control-button"
-        :class="{ 'is-active': selectedView === view.label }"
-        type="button"
-        @click="selectedView = view.label"
-      >
-        {{ view.label }}
-      </button>
-    </div>
-
     <div class="md-loading-box" :class="{ 'is-loading': loading }">
       <div v-if="loading" class="load-chart__loading">
         <md-circular-progress class="md-native-loader" indeterminate aria-label="加载中" />

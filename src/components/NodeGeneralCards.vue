@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import type { NodeData } from '@/stores/nodes'
-import { useIntervalFn } from '@vueuse/core'
-import { computed, h, onActivated, onDeactivated, onMounted, onUnmounted } from 'vue'
+import { computed, h, onMounted } from 'vue'
 import DashboardOverviewDialog from '@/components/DashboardOverviewDialog.vue'
 import RateSparkline from '@/components/RateSparkline.vue'
 import { useAppStore } from '@/stores/app'
@@ -169,22 +168,9 @@ const cardBlurClass = computed(() => {
   return `glass-${radius}`
 })
 
-const { pause: pauseRefreshTimer, resume: resumeRefreshTimer } = useIntervalFn(
-  () => {
-    void dashboardStore.refresh()
-  },
-  5 * 60 * 1000,
-  { immediate: false },
-)
-
 onMounted(() => {
   void dashboardStore.refresh()
-  resumeRefreshTimer()
 })
-
-onActivated(() => resumeRefreshTimer())
-onDeactivated(() => pauseRefreshTimer())
-onUnmounted(() => pauseRefreshTimer())
 </script>
 
 <template>
