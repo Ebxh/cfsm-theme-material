@@ -759,10 +759,14 @@ const useAppStore = defineStore('app', () => {
           else if (error instanceof ApiError && error.message.includes('只读')) {
             // CFSM theme_options 只讀：提示管理員到後台修改，
             // 同時把本次變更回退到本地覆蓋，令當前客戶端仍生效。
+            // 注意連同 queuedSave 中尚未處理的後續變更一併回填，
+            // 避免連續多次 updateAppearanceSetting（如拖動不透明度時先切
+            // 半透明再設數值）時只有第一次的 patch 生效、其餘丟失。
             window.$message?.info('CF-Server-Monitor 主題配置為只讀，請到後台「主題自定義配置 JSON」修改')
             appearanceSettingsOverrides.value = {
               ...appearanceSettingsOverrides.value,
               ...patch,
+              ...(queuedSave ?? {}),
             }
             localOverrideBaseSignature.value = managedSettingsSignature.value
           }
@@ -771,9 +775,11 @@ const useAppStore = defineStore('app', () => {
             window.$message?.error('主题设置保存失败，请稍后重试')
             // 後端非預期錯誤（如 500、網絡故障）：把本次變更回退到本地覆蓋，
             // 避免用戶以為「調咗唔生效」（實際是 admin 模式下改了但後端沒收）。
+            // queuedSave 中尚未處理的後續變更亦一併回填，防止丟失。
             appearanceSettingsOverrides.value = {
               ...appearanceSettingsOverrides.value,
               ...patch,
+              ...(queuedSave ?? {}),
             }
             localOverrideBaseSignature.value = managedSettingsSignature.value
           }
