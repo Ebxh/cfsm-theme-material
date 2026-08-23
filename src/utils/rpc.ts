@@ -1150,7 +1150,7 @@ export class KomariRpc {
     max_count?: number
   }): Promise<unknown> {
     if (params.type === 'ping')
-      return this.getPingRecords(params.task_id, params.hours, params.max_count)
+      return this.getPingRecords(params.uuid, params.hours, params.max_count)
     return this.getLoadRecords(params.uuid, params.hours, params.load_type, params.max_count)
   }
 
@@ -1172,20 +1172,26 @@ export class KomariRpc {
    * /api/history/all（原實現會產生 N+1 請求風暴）。
    * 僅當需要更長歷史窗口（> 內嵌覆蓋範圍）且指定了節點時，才回源歷史接口。
    */
+  /**
+   * 取得 Ping 記錄。
+   *
+   * - 指定 uuid（詳情頁）：直接回源 /api/history/all?id=<uuid>&hours=，不再先拉整個
+   *   /api/servers 快照，避免重複/冗餘請求（CFSM 的 show_three_net_details=false 亦
+   *   不會內嵌 ping[]，快照對單節點查詢並無用處）。
+   * - 無指定 uuid（首頁摘要）：用 /api/servers 快照內嵌歷史；CFSM 內嵌為空時逐節點
+   *   回源 /api/history/all 以取得 ~30 個採樣點供 sparkline 使用，失敗才退單點。
+   */
   async getPingRecords(uuid?: string, hours?: number, _maxCount?: number): Promise<{ records: PingRecord[], tasks: Array<{ id: number, name: string, loss: number }> }> {
-    const snapshot = await fetchServersSnapshot()
-    const allServers = snapshot?.servers ?? []
-    const servers = uuid ? allServers.filter(server => server.id === uuid) : allServers
+    const requestedHours = normalizeHistoryHours(hours)
 
-    const first = servers[0]
     // CFSM 詳情頁延遲圖固定繪製 電信/聯通/移動 三網（ServerDetail.vue 的 PING_FIELD_DEFS），
     // 不隨 show_three_net_details 開關切換；BGP 亦一併納入以對齊卡片層的 pingList。
     // 因此此處恆定回傳全部 4 個探測任務，由圖表組件決定顯示哪些。
     const PING_TASKS = [
-      { id: 1, key: 'ct', name: first?.custom_ct || '电信' },
-      { id: 2, key: 'cu', name: first?.custom_cu || '联通' },
-      { id: 3, key: 'cm', name: first?.custom_cm || '移动' },
-      { id: 4, key: 'bd', name: first?.custom_bd || 'BGP' },
+      { id: 1, key: 'ct', name: '电信' },
+      { id: 2, key: 'cu', name: '联通' },
+      { id: 3, key: 'cm', name: '移动' },
+      { id: 4, key: 'bd', name: 'BGP' },
     ] as const
     const activeTasks = PING_TASKS
 
@@ -1211,19 +1217,8 @@ export class KomariRpc {
       taskLoss[taskId] = losses
     }
 
-    // 判斷內嵌採樣是否已覆蓋所需窗口；不足時對單節點回源歷史接口
-    const requestedHours = normalizeHistoryHours(hours)
-    const embeddedSpanHours = (() => {
-      const points = first?.ping ?? []
-      if (points.length < 2)
-        return 0
-      const start = finiteNumber(points[0]?.ts)
-      const end = finiteNumber(points[points.length - 1]?.ts)
-      return end > start ? (end - start) / 3600000 : 0
-    })()
-    const needHistory = Boolean(uuid) && requestedHours > Math.max(embeddedSpanHours, 0.5)
-
-    if (needHistory && uuid) {
+    if (uuid) {
+      // 單節點（詳情頁）：直接回源歷史接口，不經 /api/servers 快照
       const rows = await cfsmRequest<Array<Record<string, unknown>>>(
         `/api/history/all?id=${encodeURIComponent(uuid)}&hours=${requestedHours}`,
       )
@@ -1234,7 +1229,10 @@ export class KomariRpc {
       }
     }
     else {
-      for (const server of servers) {
+      const snapshot = await fetchServersSnapshot()
+      const allServers = snapshot?.servers ?? []
+
+      for (const server of allServers) {
         const pingPoints = server.ping ?? []
         const lossPoints = server.loss ?? []
 
