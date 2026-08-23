@@ -30,8 +30,9 @@ const nodesStore = useNodesStore()
 
 const totalSpeed = computed(() => {
   const onlineNodes = nodesStore.nodes.filter(node => node.online)
-  const up = onlineNodes.reduce((sum, node) => sum + (node.net_out || 0), 0)
-  const down = onlineNodes.reduce((sum, node) => sum + (node.net_in || 0), 0)
+  // 使用 EMA 平滑後的顯示速率，避免 1Hz 瞬時值導致的總速率高頻跳動
+  const up = onlineNodes.reduce((sum, node) => sum + ((nodesStore.displayRates[node.uuid]?.netOut ?? node.net_out) || 0), 0)
+  const down = onlineNodes.reduce((sum, node) => sum + ((nodesStore.displayRates[node.uuid]?.netIn ?? node.net_in) || 0), 0)
   return { up, down }
 })
 
@@ -281,20 +282,18 @@ onMounted(() => {
         cardBlurClass,
       ]"
     >
-      <div class="general-card__traffic-content" aria-label="流量总览">
-        <div class="general-card__traffic-row" role="group" aria-label="月流量">
-          <span class="general-card__traffic-row-label">月流量</span>
-          <div class="general-card__traffic-row-values md-number">
-            <div class="general-card__traffic-cell general-card__traffic-cell--down">
-              <span class="material-symbols-rounded" aria-hidden="true">download</span>
-              <strong>{{ formattedTrafficDown.value }}</strong>
-              <small>{{ formattedTrafficDown.unit }}</small>
-            </div>
-            <div class="general-card__traffic-cell general-card__traffic-cell--up">
-              <span class="material-symbols-rounded" aria-hidden="true">upload</span>
-              <strong>{{ formattedTrafficUp.value }}</strong>
-              <small>{{ formattedTrafficUp.unit }}</small>
-            </div>
+      <!-- 流量总览：大字上下行流量，样式与网络速率卡保持一致（不再显示「月流量」小标签） -->
+      <div class="general-card__speed-main general-card__traffic-main">
+        <div class="general-card__metric-stack general-card__speed-metrics md-number">
+          <div class="general-card__traffic-cell--down">
+            <span class="material-symbols-rounded" aria-hidden="true">download</span>
+            <strong>{{ formattedTrafficDown.value }}</strong>
+            <small>{{ formattedTrafficDown.unit }}</small>
+          </div>
+          <div class="general-card__traffic-cell--up">
+            <span class="material-symbols-rounded" aria-hidden="true">upload</span>
+            <strong>{{ formattedTrafficUp.value }}</strong>
+            <small>{{ formattedTrafficUp.unit }}</small>
           </div>
         </div>
       </div>
@@ -551,6 +550,11 @@ onMounted(() => {
 
 .general-card--traffic-unified {
   --traffic-accent-up: var(--md-sys-color-primary);
+}
+
+/* 流量总览卡：复用网络速率卡的大字布局，图标沿用上下行区分色 */
+.general-card__traffic-main .general-card__metric-stack .material-symbols-rounded {
+  color: var(--traffic-accent);
 }
 
 .general-card__traffic-content {

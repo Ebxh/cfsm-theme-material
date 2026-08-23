@@ -108,6 +108,31 @@ const useNodesStore = defineStore('nodes', () => {
   const wsReconnectAttempts = ref<number>(0)
   /** 速率 EMA 平滑緩衝（未初始化時為 null） */
   let smoothedRate: { up: number, down: number } | null = null
+  /**
+   * 節點顯示速率平滑緩衝（uuid → EMA 平滑後的 net_in/net_out）。
+   * CFSM 每秒推送一次瞬時速率（實測抖動可達 300 倍），
+   * 卡片與總覽的速率數字若直接顯示原始值會劇烈跳動，故統一用此緩衝。
+   */
+  const displayRates = reactive<Record<string, { netIn: number, netOut: number }>>({})
+
+  /** 首次取得該節點速率時直接賦值（無歷史可平滑） */
+  function setDisplayRate(uuid: string, netIn: number, netOut: number): void {
+    displayRates[uuid] = { netIn, netOut }
+  }
+
+  /** 對節點速率做 EMA 平滑並寫入顯示緩衝 */
+  function smoothDisplayRate(uuid: string, netIn: number, netOut: number): void {
+    const prev = displayRates[uuid]
+    if (!prev) {
+      displayRates[uuid] = { netIn, netOut }
+      return
+    }
+    const alpha = RATE_SMOOTHING_ALPHA
+    displayRates[uuid] = {
+      netIn: alpha * netIn + (1 - alpha) * prev.netIn,
+      netOut: alpha * netOut + (1 - alpha) * prev.netOut,
+    }
+  }
 
   // ===== 计算属性 =====
   /** 在线节点数量 */
@@ -330,6 +355,9 @@ const useNodesStore = defineStore('nodes', () => {
 
     // 按 weight 升序排序（weight 越小越靠前）
     sortNodesByWeight()
+    // 首幀直接賦值顯示速率（無歷史可平滑）
+    for (const node of nodes.value)
+      setDisplayRate(node.uuid, node.net_in, node.net_out)
     recordNetworkRateSample()
   }
 
@@ -354,6 +382,7 @@ const useNodesStore = defineStore('nodes', () => {
         return
 
       nodes.value[index] = updateNodeStatus(node, extractStatusData(status))
+      smoothDisplayRate(uuid, status.net_in, status.net_out)
     })
     recordNetworkRateSample()
   }
@@ -458,6 +487,10 @@ const useNodesStore = defineStore('nodes', () => {
       nodes.value.push(nextNode)
     }
 
+    // 有實時狀態時平滑更新顯示速率；僅更新基本資料時保留原顯示速率
+    if (status)
+      smoothDisplayRate(client.uuid, status.net_in, status.net_out)
+
     sortNodesByWeight()
     recordNetworkRateSample()
   }
@@ -479,12 +512,15 @@ const useNodesStore = defineStore('nodes', () => {
     nodes.value = []
     networkRateHistory.value = []
     smoothedRate = null
+    for (const key of Object.keys(displayRates))
+      delete displayRates[key]
   }
 
   return {
     // 状态
     nodes,
     networkRateHistory,
+    displayRates,
     wsConnectionState,
     wsReconnectAttempts,
     // 计算属性

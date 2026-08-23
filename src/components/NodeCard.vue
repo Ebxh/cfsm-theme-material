@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import type { NodeData } from '@/stores/nodes'
-import { computed, defineAsyncComponent, h } from 'vue'
+import { useNodesStore } from '@/stores/nodes'
+import { computed } from 'vue'
 import NodePingSummary from '@/components/NodePingSummary.vue'
 import TrafficProgress from '@/components/TrafficProgress.vue'
 import { useAppStore } from '@/stores/app'
 import { formatBytesWithConfig, formatDateTime, getStatus } from '@/utils/helper'
+import { getIpBadge } from '@/utils/ipBadge'
 import { getOSImage, getOSName } from '@/utils/osImageHelper'
 import { getRegionCode, getRegionDisplayName } from '@/utils/regionHelper'
 import { formatPriceWithCycle, getDaysUntilExpired, getExpireStatus, getExpireStatusHexColor, parseTags } from '@/utils/tagHelper'
@@ -17,12 +19,16 @@ const emit = defineEmits<{
   click: []
 }>()
 
-// 懒加载：PingChart 引入 echarts（~552KB），仅在点击按钮打开图表时才需要。
-// 静态 import 会把它拖进首屏 chunk，改异步后 echarts 不再阻塞首屏。
-const PingChart = defineAsyncComponent(() => import('@/components/PingChart.vue'))
-
 const appStore = useAppStore()
+const nodesStore = useNodesStore()
 const themeColors = computed(() => appStore.materialThemeTokens.chartColors)
+
+// 顯示平滑後的速率（EMA），避免 CFSM 每秒推送的瞬時速率高頻跳動
+const displayNetOut = computed(() => nodesStore.displayRates[props.node.uuid]?.netOut ?? props.node.net_out ?? 0)
+const displayNetIn = computed(() => nodesStore.displayRates[props.node.uuid]?.netIn ?? props.node.net_in ?? 0)
+
+// IP 版本徽章（IPv4 / IPv6 / 雙棧）
+const ipBadge = computed(() => getIpBadge(props.node.ipv4, props.node.ipv6))
 
 const formatBytes = (bytes: number) => formatBytesWithConfig(bytes, appStore.byteDecimals)
 const offlineTime = computed(() => formatDateTime(props.node.time))
@@ -146,14 +152,6 @@ function tagStyle(color: string) {
     borderColor: `color-mix(in srgb, ${color} 32%, var(--md-sys-color-outline-variant))`,
   }
 }
-
-function openPingChart() {
-  window.$modal.create({
-    title: `${props.node.name} - 延迟监控`,
-    content: () => h(PingChart, { uuid: props.node.uuid }),
-    size: 'large',
-  })
-}
 </script>
 
 <template>
@@ -179,16 +177,15 @@ function openPingChart() {
       </div>
 
       <div class="node-card__actions">
-        <button
-          v-if="appStore.showPingChartButton"
-          class="material-icon-button node-card__chart-button"
-          type="button"
-          title="查看延迟图表"
-          aria-label="查看延迟图表"
-          @click.stop="openPingChart"
+        <span
+          v-if="ipBadge"
+          class="ip-badge"
+          :class="ipBadge.className"
+          :title="ipBadge.title"
         >
-          <span class="material-symbols-rounded">show_chart</span>
-        </button>
+          <span class="material-symbols-rounded ip-badge__icon" aria-hidden="true">dns</span>
+          <span class="ip-badge__label">{{ ipBadge.label }}</span>
+        </span>
         <img
           class="node-card__os-logo"
           :src="getOSImage(props.node.os)"
@@ -282,8 +279,8 @@ function openPingChart() {
 
       <NodePingSummary
         :uuid="props.node.uuid"
-        :upload-speed="props.node.net_out ?? 0"
-        :download-speed="props.node.net_in ?? 0"
+        :upload-speed="displayNetOut"
+        :download-speed="displayNetIn"
       />
 
       <div v-if="mergedTags.length > 0" class="node-card__row node-card__row--tags">

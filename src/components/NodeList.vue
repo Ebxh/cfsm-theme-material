@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import type { NodeData } from '@/stores/nodes'
-import { computed, defineAsyncComponent, h } from 'vue'
+import { useNodesStore } from '@/stores/nodes'
+import { computed } from 'vue'
 import NodePingSummary from '@/components/NodePingSummary.vue'
 import TrafficProgress from '@/components/TrafficProgress.vue'
 import { useAppStore } from '@/stores/app'
 import { formatBytesWithConfig, formatDateTime, formatUptimeWithFormat, getStatus } from '@/utils/helper'
+import { getIpBadge } from '@/utils/ipBadge'
 import { getOSImage, getOSName } from '@/utils/osImageHelper'
 import { getRegionCode, getRegionDisplayName } from '@/utils/regionHelper'
 import { formatPriceWithCycle, getDaysUntilExpired, getExpireStatus, parseTags } from '@/utils/tagHelper'
@@ -17,12 +19,23 @@ const emit = defineEmits<{
   click: [node: NodeData]
 }>()
 
-// 懒加载：PingChart 引入 echarts（~552KB），仅在点击按钮打开图表时才需要。
-// 静态 import 会把它拖进首屏 chunk，改异步后 echarts 不再阻塞首屏。
-const PingChart = defineAsyncComponent(() => import('@/components/PingChart.vue'))
-
 const appStore = useAppStore()
+const nodesStore = useNodesStore()
 const themeColors = computed(() => appStore.materialThemeTokens.chartColors)
+
+// 顯示平滑後的速率（EMA），避免 CFSM 每秒推送的瞬時速率高頻跳動
+function displayNetIn(node: NodeData): number {
+  return nodesStore.displayRates[node.uuid]?.netIn ?? node.net_in ?? 0
+}
+
+function displayNetOut(node: NodeData): number {
+  return nodesStore.displayRates[node.uuid]?.netOut ?? node.net_out ?? 0
+}
+
+// IP 版本徽章（IPv4 / IPv6 / 雙棧）
+function ipBadgeOf(node: NodeData) {
+  return getIpBadge(node.ipv4, node.ipv6)
+}
 
 const formatBytes = (bytes: number) => formatBytesWithConfig(bytes, appStore.byteDecimals)
 const formatUptime = (seconds: number) => formatUptimeWithFormat(seconds, appStore.uptimeFormat)
@@ -49,14 +62,6 @@ function getFlagSrc(region: string): string {
 
 function handleClick(node: NodeData) {
   emit('click', node)
-}
-
-function openPingChart(node: NodeData) {
-  window.$modal.create({
-    title: `${node.name} - 延迟监控`,
-    content: () => h(PingChart, { uuid: node.uuid }),
-    size: 'large',
-  })
 }
 
 function showTrafficProgress(node: NodeData): boolean {
@@ -278,8 +283,8 @@ function diskPercent(node: NodeData) {
         <NodePingSummary
           class="node-list-card__ping"
           :uuid="node.uuid"
-          :upload-speed="node.net_out ?? 0"
-          :download-speed="node.net_in ?? 0"
+          :upload-speed="displayNetOut(node)"
+          :download-speed="displayNetIn(node)"
           density="compact"
         />
 
@@ -290,16 +295,15 @@ function diskPercent(node: NodeData) {
             </span>
           </div>
 
-          <button
-            v-if="appStore.showPingChartButton"
-            class="material-icon-button node-list-card__chart-button"
-            type="button"
-            title="查看延迟图表"
-            aria-label="查看延迟图表"
-            @click.stop="openPingChart(node)"
+          <span
+            v-if="ipBadgeOf(node)"
+            class="ip-badge"
+            :class="ipBadgeOf(node)!.className"
+            :title="ipBadgeOf(node)!.title"
           >
-            <span class="material-symbols-rounded">show_chart</span>
-          </button>
+            <span class="material-symbols-rounded ip-badge__icon" aria-hidden="true">dns</span>
+            <span class="ip-badge__label">{{ ipBadgeOf(node)!.label }}</span>
+          </span>
         </div>
 
         <div v-if="!node.online" class="node-list-card__offline-overlay" aria-hidden="true">
