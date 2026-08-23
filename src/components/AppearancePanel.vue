@@ -92,7 +92,13 @@ const cardSurfaceModel = computed<CardSurfaceStyle>({
 
 const cardOpacityModel = computed<number>({
   get: () => appStore.cardOpacity,
-  set: value => appStore.updateAppearanceSetting('cardOpacity', clampNumber(value, 50, 95)),
+  set: (value) => {
+    // 調整卡片不透明度時自動啟用「半透明」表面：
+    // 若用戶仍喺「實色」模式，透明度冇視覺意義，滑桿亦會俾 disabled 鎖死。
+    if (appStore.cardSurfaceStyle !== 'translucent')
+      appStore.updateAppearanceSetting('cardSurfaceStyle', 'translucent')
+    appStore.updateAppearanceSetting('cardOpacity', clampNumber(value, 50, 95))
+  },
 })
 
 const fullWidthModel = computed<boolean>({
@@ -371,19 +377,18 @@ function handleTabKeydown(event: KeyboardEvent, currentIndex: number) {
             </button>
           </div>
 
-          <label class="appearance-range appearance-range--prominent" :class="{ 'is-disabled': cardSurfaceModel !== 'translucent' }">
+          <label class="appearance-range appearance-range--prominent">
             <span class="appearance-range__header">
               <strong>卡片不透明度</strong>
               <output>{{ cardOpacityModel }}%</output>
             </span>
-            <span class="appearance-range__supporting">数值越低，壁纸越清晰</span>
+            <span class="appearance-range__supporting">数值越低，壁纸越清晰；调整时自动切换为半透明表面</span>
             <input
               v-model.number="cardOpacityModel"
               type="range"
               min="50"
               max="95"
               step="1"
-              :disabled="cardSurfaceModel !== 'translucent'"
             >
           </label>
         </section>
