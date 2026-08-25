@@ -548,11 +548,20 @@ export class KomariApi {
     }, this.timeout)
   }
 
-  /** 獲取當前用戶信息（CFSM：/api/config.authorization） */
+  /**
+   * 獲取當前用戶信息（CFSM：/api/config.authorization）
+   * 登入態綜合兩個信號，避免「已登入但圖標不切換」：
+   *  - config.authorization：後端 /api/config 在攜帶有效 JWT 時回傳的授權標記；
+   *  - localStorage.jwt_token：adminLogin 成功後一定寫入（cfsmFetch 亦會自動帶上）。
+   * 任一為真即視為已登入。理由：/api/config.authorization 在某些部署下
+   * （尤其是「跳 /admin 後台登入」後回主題首頁）不會可靠刷新，導致 getMe
+   * 誤判為未登入；而 jwt_token 是登入成功後最穩定的憑證信號。
+   */
   async getMe(): Promise<MeInfo> {
     const config = await fetchCfsmConfig(this.timeout)
+    const jwt = getLocalStorageValue('jwt_token')
     return {
-      logged_in: Boolean(config?.authorization),
+      logged_in: Boolean(config?.authorization) || Boolean(jwt),
       username: '',
     }
   }
