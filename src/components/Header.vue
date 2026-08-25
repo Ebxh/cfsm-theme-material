@@ -4,7 +4,10 @@ import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 
 const AppearancePanel = defineAsyncComponent(() => import('./AppearancePanel.vue'))
-const LoginDialog = defineAsyncComponent(() => import('./LoginDialog.vue'))
+
+/** CFSM 主題約定（AGENTS.md）：登入一律跳轉到 `${origin}/admin`，不在主題內實現登入頁。 */
+const ADMIN_REDIRECT_PATH = '/admin#admin'
+const adminRedirectUrl = computed(() => `${window.location.origin}${ADMIN_REDIRECT_PATH}`)
 
 const router = useRouter()
 const appStore = useAppStore()
@@ -37,13 +40,12 @@ function handleButtonClick(action: string) {
       })
       break
     case 'jumpToSetting':
-      location.href = '/admin#/admin'
+      location.href = adminRedirectUrl.value
       break
     case 'openLoginDialog':
-      window.$modal.create({
-        title: '登录',
-        content: () => h(LoginDialog),
-      })
+      // 點擊右上角「登入」按鈕：依約定直接跳轉到後台登入入口，
+      // 不再於主題內彈 dialog（避免繞過後台登入 UI / Turnstile / OAuth 配置）。
+      location.href = adminRedirectUrl.value
       break
   }
 }
