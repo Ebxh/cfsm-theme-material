@@ -386,58 +386,93 @@ function authHeaders(baseUrl: string): Headers {
   return headers
 }
 
+/** GET 請求去重 + 短 TTL 緩存（按 path + headers 當 key）。 */
+const GET_FETCH_CACHE_TTL_MS = 1500
+
+const getFetchCache = new Map<string, { at: number, data: unknown }>()
+const getFetchInflight = new Map<string, Promise<unknown>>()
+
 async function cfsmFetch<T>(path: string, options: RequestInit = {}, timeoutMs = 30000): Promise<T> {
+  // 僅對 GET（無 body）做去重；POST（如 /admin/api 登入）直接回源，避免緩存副作用。
+  const isGet = !options.method || options.method === 'GET'
+  const cacheKey = isGet ? `${path}|${JSON.stringify(options.headers ?? {})}` : null
+
+  if (cacheKey) {
+    const cached = getFetchCache.get(cacheKey)
+    if (cached && Date.now() - cached.at < GET_FETCH_CACHE_TTL_MS)
+      return cached.data as T
+    const inflight = getFetchInflight.get(cacheKey)
+    if (inflight)
+      return inflight as Promise<T>
+  }
+
   const bases = getApiBases()
   const baseUrl = normalizeBase(bases[0] ?? window.location.origin)
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
-  try {
-    const response = await fetch(`${baseUrl}${path}`, {
-      ...options,
-      headers: {
-        ...authHeaders(baseUrl),
-        ...(options.headers as Record<string, string> | undefined),
-      },
-      signal: controller.signal,
-    })
-    clearTimeout(timeoutId)
+  const run = async (): Promise<T> => {
+    try {
+      const response = await fetch(`${baseUrl}${path}`, {
+        ...options,
+        headers: {
+          ...authHeaders(baseUrl),
+          ...(options.headers as Record<string, string> | undefined),
+        },
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
 
-    if (!response.ok) {
-      let message = `HTTP error: ${response.status}`
+      if (!response.ok) {
+        let message = `HTTP error: ${response.status}`
+        try {
+          const data = await response.json()
+          if (data && typeof data === 'object' && 'error' in data)
+            message = String((data as { error: unknown }).error)
+        }
+        catch {
+          // ignore
+        }
+        throw new ApiError(message, 'error', response.status)
+      }
+
+      let data: unknown = null
       try {
-        const data = await response.json()
-        if (data && typeof data === 'object' && 'error' in data)
-          message = String((data as { error: unknown }).error)
+        data = await response.json()
       }
       catch {
-        // ignore
+        data = null
       }
-      throw new ApiError(message, 'error', response.status)
-    }
 
-    let data: unknown = null
-    try {
-      data = await response.json()
-    }
-    catch {
-      data = null
-    }
-
-    if (data && typeof data === 'object' && 'turnstile_verified' in data) {
-      const verified = String((data as { turnstile_verified?: unknown }).turnstile_verified || '')
-      if (verified) {
-        localStorage.setItem('turnstile_verified', verified)
-        localStorage.removeItem('turnstile_token')
+      if (data && typeof data === 'object' && 'turnstile_verified' in data) {
+        const verified = String((data as { turnstile_verified?: unknown }).turnstile_verified || '')
+        if (verified) {
+          localStorage.setItem('turnstile_verified', verified)
+          localStorage.removeItem('turnstile_token')
+        }
       }
+      return data as T
     }
-    return data as T
+    catch (error) {
+      clearTimeout(timeoutId)
+      if (error instanceof ApiError)
+        throw error
+      throw new ApiError(`Network error: ${error instanceof Error ? error.message : String(error)}`, 'error')
+    }
   }
-  catch (error) {
-    clearTimeout(timeoutId)
-    if (error instanceof ApiError)
-      throw error
-    throw new ApiError(`Network error: ${error instanceof Error ? error.message : String(error)}`, 'error')
+
+  if (!cacheKey)
+    return run()
+
+  const promise = run()
+  getFetchInflight.set(cacheKey, promise)
+  try {
+    const result = await promise
+    getFetchCache.set(cacheKey, { at: Date.now(), data: result })
+    return result
+  }
+  finally {
+    getFetchInflight.delete(cacheKey)
   }
 }
 

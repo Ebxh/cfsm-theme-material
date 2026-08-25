@@ -4,6 +4,9 @@ import { useAppStore } from '@/stores/app'
 import { ApiError, getSharedApi } from '@/utils/api'
 import { reconnectAfterLogin } from '@/utils/init'
 
+/** CFSM 主題約束：登入跳轉到 `${origin}/admin` 子頁，遵循 AGENTS.md。 */
+const ADMIN_REDIRECT_PATH = '/admin#admin'
+
 /** Cloudflare Turnstile 官方腳本（顯式渲染模式） */
 const TURNSTILE_SCRIPT_URL = 'https://challenges.cloudflare.com/turnstile/api.js?render=explicit'
 
@@ -68,12 +71,16 @@ async function finishLogin() {
   window.$message?.success('登录成功')
 
   if (props.forceLogin) {
+    // 強制登入後父層（init.ts）會重新 bootstrap；保留事件讓監聽者按需使用
     emit('loginSuccess')
   }
   else {
     await reconnectAfterLogin()
     window.$modal?.destroyAll()
   }
+
+  // 統一跳轉到後台入口（AGENTS.md 約定：CFSM 主題不實現自己的登入頁）
+  location.href = `${window.location.origin}${ADMIN_REDIRECT_PATH}`
 }
 
 /** 動態載入 Turnstile 腳本（冪等：已載入直接返回） */
@@ -143,6 +150,12 @@ function resetTurnstile(): void {
 }
 
 async function handleLogin() {
+  if (props.forceLogin) {
+    // 強制登入場景：直接跳到後台登入頁，避免主題內重複登入表單
+    location.href = `${window.location.origin}${ADMIN_REDIRECT_PATH}`
+    return
+  }
+
   if (!validateForm())
     return
 
@@ -181,13 +194,18 @@ async function handleLogin() {
   }
 }
 
+/** 關閉當前登入彈窗（CFSM 主題自帶 $modal 介面） */
+function handleCancel() {
+  window.$modal?.destroyAll()
+}
+
 async function handleOtpSubmit() {
   window.$modal?.destroyAll()
-  location.href = `${window.location.origin}/admin`
+  location.href = `${window.location.origin}${ADMIN_REDIRECT_PATH}`
 }
 
 function handleOAuth2Login() {
-  location.href = `${window.location.origin}/admin`
+  location.href = `${window.location.origin}${ADMIN_REDIRECT_PATH}`
 }
 
 // publicSettings 可能晚於組件掛載載入（並行 bootstrap），載入後再渲染 Turnstile
@@ -243,8 +261,12 @@ onBeforeUnmount(() => {
 
       <md-filled-button class="login-dialog__primary" :disabled="loading" @click="handleLogin">
         <span class="material-symbols-rounded login-dialog__button-icon" aria-hidden="true">login</span>
-        <span>{{ loading ? '登录中...' : '登录' }}</span>
+        <span>{{ loading ? '跳转中...' : '登录' }}</span>
       </md-filled-button>
+
+      <md-text-button class="login-dialog__cancel" type="button" @click="handleCancel">
+        取消
+      </md-text-button>
 
       <template v-if="appStore.publicSettings?.oauth_enable">
         <div class="login-dialog__divider" />
@@ -301,6 +323,10 @@ onBeforeUnmount(() => {
 
 .login-dialog__primary {
   width: 100%;
+}
+
+.login-dialog__cancel {
+  align-self: center;
 }
 
 .login-dialog__button-icon {

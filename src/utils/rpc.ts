@@ -643,48 +643,81 @@ function authHeaders(baseUrl: string): Headers {
   return headers
 }
 
+/**
+ * GET 請求去重 + 短 TTL 緩存（按完整 path 當 key）。
+ *
+ * 解決詳情頁同時渲染「負載圖」與「Ping 圖」時，二者各自打
+ * `/api/history/all?id=<uuid>&hours=<h>`（見 getLoadRecords / getPingRecords）
+ * 產生的重複請求——同一輪渲染內只發一次真實 HTTP，降低 Cloudflare
+ * Worker / D1 請求量。TTL 很短（1.5s），只合併併發請求，不會長期佔用舊數據；
+ * 實時更新走 WebSocket，不受此緩存影響。
+ */
+const RPC_GET_CACHE_TTL_MS = 1500
+
+const rpcGetCache = new Map<string, { at: number, data: unknown }>()
+const rpcGetInflight = new Map<string, Promise<unknown>>()
+
 async function cfsmRequest<T>(path: string, timeoutMs = 30000): Promise<T> {
-  const bases = getApiBases()
-  const baseUrl = normalizeBase(bases[0] ?? window.location.origin)
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+  const cached = rpcGetCache.get(path)
+  if (cached && Date.now() - cached.at < RPC_GET_CACHE_TTL_MS)
+    return cached.data as T
+  const inflight = rpcGetInflight.get(path)
+  if (inflight)
+    return inflight as Promise<T>
 
-  try {
-    const response = await fetch(`${baseUrl}${path}`, {
-      headers: authHeaders(baseUrl),
-      signal: controller.signal,
-    })
-    clearTimeout(timeoutId)
+  const promise = (async (): Promise<T> => {
+    const bases = getApiBases()
+    const baseUrl = normalizeBase(bases[0] ?? window.location.origin)
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
-    if (response.status === 401) {
-      throw new RpcError(401, 'Unauthorized')
-    }
-    if (!response.ok) {
-      throw new RpcError(response.status, `HTTP error: ${response.status}`)
-    }
-
-    let data: unknown = null
     try {
-      data = await response.json()
-    }
-    catch {
-      data = null
-    }
+      const response = await fetch(`${baseUrl}${path}`, {
+        headers: authHeaders(baseUrl),
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
 
-    if (data && typeof data === 'object' && 'turnstile_verified' in data) {
-      const verified = String((data as { turnstile_verified?: unknown }).turnstile_verified || '')
-      if (verified) {
-        localStorage.setItem('turnstile_verified', verified)
-        localStorage.removeItem('turnstile_token')
+      if (response.status === 401) {
+        throw new RpcError(401, 'Unauthorized')
       }
+      if (!response.ok) {
+        throw new RpcError(response.status, `HTTP error: ${response.status}`)
+      }
+
+      let data: unknown = null
+      try {
+        data = await response.json()
+      }
+      catch {
+        data = null
+      }
+
+      if (data && typeof data === 'object' && 'turnstile_verified' in data) {
+        const verified = String((data as { turnstile_verified?: unknown }).turnstile_verified || '')
+        if (verified) {
+          localStorage.setItem('turnstile_verified', verified)
+          localStorage.removeItem('turnstile_token')
+        }
+      }
+      return data as T
     }
-    return data as T
+    catch (error) {
+      clearTimeout(timeoutId)
+      if (error instanceof RpcError)
+        throw error
+      throw new RpcError(-32000, `Network error: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  })()
+
+  rpcGetInflight.set(path, promise)
+  try {
+    const result = await promise
+    rpcGetCache.set(path, { at: Date.now(), data: result })
+    return result
   }
-  catch (error) {
-    clearTimeout(timeoutId)
-    if (error instanceof RpcError)
-      throw error
-    throw new RpcError(-32000, `Network error: ${error instanceof Error ? error.message : String(error)}`)
+  finally {
+    rpcGetInflight.delete(path)
   }
 }
 

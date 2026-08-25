@@ -282,7 +282,7 @@ onMounted(() => {
         cardBlurClass,
       ]"
     >
-      <!-- 流量总览：大字上下行流量，样式与网络速率卡保持一致（不再显示「月流量」小标签） -->
+      <!-- 月流量：大字上下行流量，样式与网络速率卡保持一致 -->
       <div class="general-card__speed-main general-card__traffic-main">
         <div class="general-card__metric-stack general-card__speed-metrics md-number">
           <div class="general-card__traffic-cell--down">
@@ -299,7 +299,7 @@ onMounted(() => {
       </div>
       <div class="general-card__label">
         <span class="material-symbols-rounded" aria-hidden="true">swap_vert</span>
-        流量总览
+        月流量
       </div>
     </article>
 
@@ -552,7 +552,7 @@ onMounted(() => {
   --traffic-accent-up: var(--md-sys-color-primary);
 }
 
-/* 流量总览卡：复用网络速率卡的大字布局，图标沿用上下行区分色 */
+/* 月流量卡：复用网络速率卡的大字布局，图标沿用上下行区分色 */
 .general-card__traffic-main .general-card__metric-stack .material-symbols-rounded {
   color: var(--traffic-accent);
 }
