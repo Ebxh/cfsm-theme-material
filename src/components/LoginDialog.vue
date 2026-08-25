@@ -75,7 +75,13 @@ async function finishLogin() {
     emit('loginSuccess')
   }
   else {
-    await reconnectAfterLogin()
+    // 保留原始登入態判斷：重新拉取用戶信息並同步 isLoggedIn（reconnectAfterLogin → getMe）
+    try {
+      await reconnectAfterLogin()
+    }
+    catch (error) {
+      console.warn('[LoginDialog] 登入後重連失敗，仍跳轉後台：', error)
+    }
     window.$modal?.destroyAll()
   }
 
